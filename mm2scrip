@@ -1,224 +1,175 @@
--- Death Order: Simon Says - Mobile Auto Script
--- Works with mobile executors (Arceus X, Codex, Hydrogen, Delta, etc.)
+local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+
+local Window = Rayfield:CreateWindow({
+    Name = "<@1465775865362387147>",
+    LoadingTitle = "<@1465775865362387147>",
+    LoadingSubtitle = "<@1465775865362387147>",
+    ConfigurationSaving = {Enabled = false}
+})
+
+local Tab = Window:CreateTab("Main")
 
 local Players = game:GetService("Players")
-local player = Players.LocalPlayer
-local character = player.Character or player.CharacterAdded:Wait()
-local humanoid = character:WaitForChild("Humanoid")
-local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
 local UserInputService = game:GetService("UserInputService")
 
--- Mobile GUI Setup
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "SimonScript"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.Parent = game:GetService("CoreGui") -- Safe from detection on most executors
+local prediction = 0.22
 
--- Toggle Button
-local ToggleButton = Instance.new("TextButton")
-ToggleButton.Size = UDim2.new(0, 60, 0, 60)
-ToggleButton.Position = UDim2.new(0.85, 0, 0.4, 0)
-ToggleButton.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
-ToggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-ToggleButton.Text = "OFF"
-ToggleButton.Font = Enum.Font.SourceSansBold
-ToggleButton.TextSize = 14
-ToggleButton.BorderSizePixel = 0
-ToggleButton.BackgroundTransparency = 0.2
-ToggleButton.Parent = ScreenGui
+-- Mobile button variables
+local mobileButton = nil
+local isMobile = UserInputService.TouchEnabled
 
--- Make button draggable
-local dragging = false
-local dragInput, dragStart, startPos
-
-ToggleButton.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = ToggleButton.Position
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then
-                dragging = false
+local function GetMurderer()
+    for _,v in pairs(Players:GetPlayers()) do
+        if v ~= LocalPlayer then
+            if v.Backpack:FindFirstChild("Knife") or (v.Character and v.Character:FindFirstChild("Knife")) then
+                return v
             end
-        end)
-    end
-end)
-
-ToggleButton.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch and dragging then
-        local delta = input.Position - dragStart
-        ToggleButton.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-    end
-end)
-
--- Settings
-local ENABLED = false
-
-ToggleButton.MouseButton1Click:Connect(function()
-    ENABLED = not ENABLED
-    if ENABLED then
-        ToggleButton.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
-        ToggleButton.Text = "ON"
-    else
-        ToggleButton.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
-        ToggleButton.Text = "OFF"
-    end
-end)
-
--- Status label
-local StatusLabel = Instance.new("TextLabel")
-StatusLabel.Size = UDim2.new(0, 150, 0, 20)
-StatusLabel.Position = UDim2.new(0.7, 0, 0.5, 0)
-StatusLabel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-StatusLabel.BackgroundTransparency = 0.5
-StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-StatusLabel.Text = "Waiting for Simon..."
-StatusLabel.Font = Enum.Font.SourceSans
-StatusLabel.TextSize = 12
-StatusLabel.BorderSizePixel = 0
-StatusLabel.Parent = ScreenGui
-
--- Functions
-local function findNearestObject(objectName)
-    local closest = nil
-    local closestDistance = math.huge
-    local rootPart = character:FindFirstChild("HumanoidRootPart")
-    if not rootPart then return nil end
-    
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("BasePart") and obj.Name:lower():find(objectName:lower()) then
-            local distance = (rootPart.Position - obj.Position).Magnitude
-            if distance < closestDistance then
-                closestDistance = distance
-                closest = obj
-            end
-        end
-    end
-    return closest
-end
-
-local function moveTo(target)
-    if character and character:FindFirstChild("HumanoidRootPart") then
-        humanoid:MoveTo(target)
-    end
-end
-
-local function handleCommand(command)
-    command = command:lower()
-    
-    if command:find("jump") and not command:find("don't") then
-        humanoid.Jump = true
-        StatusLabel.Text = "Jumped!"
-    elseif command:find("crouch") then
-        humanoid.Sit = true
-        StatusLabel.Text = "Crouching"
-    elseif command:find("sit down") or command:find("sit") then
-        humanoid.Sit = true
-        StatusLabel.Text = "Sitting"
-    elseif command:find("stand up") or command:find("stand") then
-        humanoid.Sit = false
-        StatusLabel.Text = "Standing"
-    elseif command:find("sprint") then
-        humanoid.WalkSpeed = 30
-        StatusLabel.Text = "Sprinting"
-        task.wait(3)
-        humanoid.WalkSpeed = 16
-    elseif command:find("dance") then
-        StatusLabel.Text = "Dancing"
-    elseif command:find("don't move") or command:find("freeze") then
-        humanoid.WalkSpeed = 0
-        StatusLabel.Text = "Frozen!"
-        task.wait(4)
-        humanoid.WalkSpeed = 16
-        StatusLabel.Text = "Unfrozen"
-    elseif command:find("go to bed") or command:find("bed") then
-        local bed = findNearestObject("Bed")
-        if bed then
-            moveTo(bed.Position)
-            StatusLabel.Text = "Going to bed..."
-        end
-    elseif command:find("cafeteria") or command:find("lunch") then
-        local caf = findNearestObject("Cafeteria")
-        if caf then
-            moveTo(caf.Position)
-            StatusLabel.Text = "Going to cafeteria..."
-        end
-    elseif command:find("basement") then
-        local base = findNearestObject("Basement")
-        if base then
-            moveTo(base.Position)
-            StatusLabel.Text = "Going to basement..."
-        end
-    elseif command:find("second floor") or command:find("2nd floor") then
-        local floor2 = findNearestObject("Stairs")
-        if floor2 then
-            moveTo(floor2.Position)
-            StatusLabel.Text = "Going upstairs..."
-        end
-    elseif command:find("circle") or command:find("get in the circle") then
-        local circle = findNearestObject("Circle")
-        if circle then
-            moveTo(circle.Position)
-            StatusLabel.Text = "Moving to circle..."
-        end
-    elseif command:find("hide") then
-        StatusLabel.Text = "Hiding..."
-        -- Move to random far corner
-        local rootPart = character:FindFirstChild("HumanoidRootPart")
-        if rootPart then
-            local randomPos = rootPart.Position + Vector3.new(math.random(-50, 50), 0, math.random(-50, 50))
-            moveTo(randomPos)
-        end
-    elseif command:find("stand on the table") or command:find("stand on table") then
-        local tableObj = findNearestObject("Table")
-        if tableObj then
-            moveTo(tableObj.Position + Vector3.new(0, 3, 0))
-            StatusLabel.Text = "On table!"
-        end
-    elseif command:find("stand on the line") then
-        local line = findNearestObject("Line")
-        if line then
-            moveTo(line.Position)
-            StatusLabel.Text = "On the line!"
         end
     end
 end
 
--- Chat detection
-local function setupChatListener()
-    for _, p in ipairs(Players:GetPlayers()) do
-        p.Chatted:Connect(function(msg)
-            if not ENABLED then return end
-            if p.Name:lower():find("simon") then
-                local lowerMsg = msg:lower()
-                if lowerMsg:find("simon says") then
-                    local command = lowerMsg:gsub("simon says", ""):gsub("^%s+", "")
-                    handleCommand(command)
-                end
-            end
-        end)
+local function EquipGun()
+    local gun = LocalPlayer.Backpack:FindFirstChild("Gun")
+    if gun then
+        LocalPlayer.Character.Humanoid:EquipTool(gun)
+        return gun
     end
+    return LocalPlayer.Character:FindFirstChild("Gun")
+end
+
+local function ShootMurderer()
+    local murderer = GetMurderer()
+    if not murderer or not murderer.Character then return end
+
+    local targetHRP = murderer.Character:FindFirstChild("HumanoidRootPart")
+    local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+
+    if not targetHRP or not myHRP then return end
+
+    local gun = EquipGun()
+    if not gun then return end
+
+    local shootRemote = gun:FindFirstChild("Shoot")
+    if not shootRemote then return end
+
+    local velocity = targetHRP.AssemblyLinearVelocity
+    local predicted = targetHRP.Position + (velocity * prediction)
+
+    predicted = predicted + Vector3.new(0,1.2,0)
+
+    local args = {
+        CFrame.new(myHRP.Position, predicted),
+        CFrame.new(predicted)
+    }
+    shootRemote:FireServer(unpack(args))
+end
+
+-- PC Keybind (works for both PC and mobile but keyboard won't show on mobile)
+Tab:CreateKeybind({
+    Name = "Shoot Murderer (Keyboard)",
+    CurrentKeybind = "Q",
+    HoldToInteract = false,
+    Callback = function()
+        ShootMurderer()
+    end
+})
+
+-- Mobile GUI Button (Only shows on mobile devices)
+if isMobile then
+    -- Create a screen GUI for the mobile button
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "MurderMysteryMobileGUI"
+    screenGui.Parent = LocalPlayer.PlayerGui
     
-    Players.PlayerAdded:Connect(function(p)
-        p.Chatted:Connect(function(msg)
-            if not ENABLED then return end
-            if p.Name:lower():find("simon") then
-                local lowerMsg = msg:lower()
-                if lowerMsg:find("simon says") then
-                    local command = lowerMsg:gsub("simon says", ""):gsub("^%s+", "")
-                    handleCommand(command)
-                end
-            end
-        end)
+    -- Create the shoot button frame
+    local buttonFrame = Instance.new("Frame")
+    buttonFrame.Size = UDim2.new(0, 120, 0, 120)
+    buttonFrame.Position = UDim2.new(0.85, -60, 0.75, -60) -- Bottom right corner
+    buttonFrame.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+    buttonFrame.BackgroundTransparency = 0.3
+    buttonFrame.BorderSizePixel = 2
+    buttonFrame.BorderColor3 = Color3.fromRGB(255, 255, 255)
+    buttonFrame.Parent = screenGui
+    
+    -- Add corner rounding
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0) -- Makes it a circle
+    corner.Parent = buttonFrame
+    
+    -- Add a text label
+    local buttonLabel = Instance.new("TextLabel")
+    buttonLabel.Size = UDim2.new(1, 0, 1, 0)
+    buttonLabel.Position = UDim2.new(0, 0, 0, 0)
+    buttonLabel.BackgroundTransparency = 1
+    buttonLabel.Text = "🔫"
+    buttonLabel.TextSize = 50
+    buttonLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    buttonLabel.Font = Enum.Font.SourceSansBold
+    buttonLabel.Parent = buttonFrame
+    
+    -- Add click detection
+    local button = Instance.new("ImageButton")
+    button.Size = UDim2.new(1, 0, 1, 0)
+    button.Position = UDim2.new(0, 0, 0, 0)
+    button.BackgroundTransparency = 1
+    button.Parent = buttonFrame
+    
+    -- Button hover/press effects
+    button.MouseEnter:Connect(function()
+        buttonFrame.BackgroundTransparency = 0.2
+    end)
+    
+    button.MouseLeave:Connect(function()
+        buttonFrame.BackgroundTransparency = 0.3
+    end)
+    
+    button.MouseButton1Down:Connect(function()
+        buttonFrame.Size = UDim2.new(0, 110, 0, 110) -- Shrink slightly when pressed
+    end)
+    
+    button.MouseButton1Up:Connect(function()
+        buttonFrame.Size = UDim2.new(0, 120, 0, 120) -- Return to normal size
+    end)
+    
+    -- The actual shoot function for mobile
+    button.MouseButton1Click:Connect(function()
+        ShootMurderer()
+    end)
+    
+    -- Make button draggable (optional mobile feature)
+    local dragging = false
+    local dragStart = nil
+    local startPos = nil
+    
+    button.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = buttonFrame.Position
+        end
+    end)
+    
+    button.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+    
+    button.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.Touch then
+            local delta = input.Position - dragStart
+            buttonFrame.Position = UDim2.new(
+                startPos.X.Scale + (delta.X / game:GetService("GuiService").GetScreenResolution().X),
+                0,
+                startPos.Y.Scale + (delta.Y / game:GetService("GuiService").GetScreenResolution().Y),
+                0
+            )
+        end
     end)
 end
 
-setupChatListener()
-
--- Character respawn handling
-player.CharacterAdded:Connect(function(char)
-    character = char
-    humanoid = char:WaitForChild("Humanoid")
-end)
-
-StatusLabel.Text = "Script Ready! Tap button to enable"
+-- Status notification for mobile users
+if isMobile then
+    print("Mobile mode detected! Look for the red shoot button at the bottom right of your screen.")
+end
