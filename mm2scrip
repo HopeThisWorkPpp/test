@@ -20,10 +20,11 @@ local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local Camera = Workspace.CurrentCamera
+local Debris = game:GetService("Debris")
 
 -- ===== VARIABLES =====
-local prediction = 0.185 -- More accurate default
-local verticalOffset = 0.8 -- Lower offset for better accuracy
+local prediction = 0.185
+local verticalOffset = 0.8
 local isMobile = UserInputService.TouchEnabled
 local mobileGUI = nil
 local buttonFrame = nil
@@ -133,91 +134,121 @@ local function RemoveGlowESP(player)
     end
 end
 
--- ===== GUN ESP FUNCTIONS =====
+-- ===== GUN ESP FUNCTIONS (FIXED) =====
 local function CreateGunESP(tool)
-    if not tool or not tool:IsA("Tool") then return end
+    if not tool then return end
     if tool.Name ~= "Gun" then return end
     
+    -- Check if gun already has ESP
     for _, esp in pairs(gunESPObjects) do
         if esp.Tool == tool then
             return
         end
     end
     
+    -- Check if gun is in a player's inventory (ignore)
     if tool.Parent and tool.Parent:IsA("Model") and tool.Parent:FindFirstChild("Humanoid") then
         return
     end
+    if tool.Parent and tool.Parent:IsA("Backpack") then
+        return
+    end
     
-    local billboard = Instance.new("BillboardGui")
-    billboard.Name = "GunESP"
-    billboard.Size = UDim2.new(0, 100, 0, 30)
-    billboard.Adornee = tool
-    billboard.AlwaysOnTop = true
-    billboard.StudsOffset = Vector3.new(0, 1.5, 0)
-    billboard.MaxDistance = 100
-    billboard.Parent = tool
-    
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, 0, 1, 0)
-    frame.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
-    frame.BackgroundTransparency = 0.3
-    frame.BorderSizePixel = 2
-    frame.BorderColor3 = Color3.fromRGB(255, 255, 255)
-    frame.Parent = billboard
-    
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 5)
-    corner.Parent = frame
-    
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, 0, 1, 0)
-    label.BackgroundTransparency = 1
-    label.Text = "🔫 GUN DROPPED!"
-    label.TextSize = 14
-    label.TextColor3 = Color3.fromRGB(255, 255, 255)
-    label.Font = Enum.Font.SourceSansBold
-    label.TextStrokeTransparency = 0.3
-    label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    label.Parent = frame
-    
-    local glowFrame = Instance.new("Frame")
-    glowFrame.Size = UDim2.new(1.2, 0, 1.5, 0)
-    glowFrame.Position = UDim2.new(-0.1, 0, -0.25, 0)
-    glowFrame.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
-    glowFrame.BackgroundTransparency = 0.7
-    glowFrame.BorderSizePixel = 0
-    glowFrame.Parent = billboard
-    
-    local glowCorner = Instance.new("UICorner")
-    glowCorner.CornerRadius = UDim.new(0, 10)
-    glowCorner.Parent = glowFrame
-    
-    table.insert(gunESPObjects, {
-        Tool = tool,
-        Billboard = billboard,
-        Frame = frame,
-        GlowFrame = glowFrame,
-        Label = label
-    })
-    
-    spawn(function()
-        local startTime = tick()
-        while billboard and billboard.Parent do
-            local elapsed = tick() - startTime
-            local pulse = 0.5 + 0.5 * math.sin(elapsed * 3)
-            
-            if glowFrame then
-                glowFrame.BackgroundTransparency = 0.4 + (0.4 * pulse)
-                glowFrame.Size = UDim2.new(1.1 + (0.2 * pulse), 0, 1.3 + (0.4 * pulse), 0)
+    -- Check if the gun is actually on the ground (in workspace)
+    if not tool.Parent or tool.Parent == Workspace then
+        -- It's a dropped gun!
+        local billboard = Instance.new("BillboardGui")
+        billboard.Name = "GunESP"
+        billboard.Size = UDim2.new(0, 120, 0, 40)
+        billboard.Adornee = tool
+        billboard.AlwaysOnTop = true
+        billboard.StudsOffset = Vector3.new(0, 2, 0)
+        billboard.MaxDistance = 150
+        billboard.Parent = tool
+        
+        local frame = Instance.new("Frame")
+        frame.Size = UDim2.new(1, 0, 1, 0)
+        frame.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
+        frame.BackgroundTransparency = 0.2
+        frame.BorderSizePixel = 2
+        frame.BorderColor3 = Color3.fromRGB(255, 255, 255)
+        frame.Parent = billboard
+        
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 8)
+        corner.Parent = frame
+        
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(1, 0, 1, 0)
+        label.BackgroundTransparency = 1
+        label.Text = "🔫 GUN DROPPED!"
+        label.TextSize = 16
+        label.TextColor3 = Color3.fromRGB(255, 255, 255)
+        label.Font = Enum.Font.SourceSansBold
+        label.TextStrokeTransparency = 0.2
+        label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+        label.Parent = frame
+        
+        -- Glow effect behind text
+        local glowFrame = Instance.new("Frame")
+        glowFrame.Size = UDim2.new(1.3, 0, 1.8, 0)
+        glowFrame.Position = UDim2.new(-0.15, 0, -0.4, 0)
+        glowFrame.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
+        glowFrame.BackgroundTransparency = 0.6
+        glowFrame.BorderSizePixel = 0
+        glowFrame.Parent = billboard
+        
+        local glowCorner = Instance.new("UICorner")
+        glowCorner.CornerRadius = UDim.new(0, 12)
+        glowCorner.Parent = glowFrame
+        
+        -- Arrow pointing to gun
+        local arrow = Instance.new("TextLabel")
+        arrow.Size = UDim2.new(0, 30, 0, 30)
+        arrow.Position = UDim2.new(0.5, -15, -1.2, 0)
+        arrow.BackgroundTransparency = 1
+        arrow.Text = "⬇️"
+        arrow.TextSize = 25
+        arrow.TextColor3 = Color3.fromRGB(255, 200, 0)
+        arrow.Font = Enum.Font.SourceSansBold
+        arrow.Parent = billboard
+        
+        table.insert(gunESPObjects, {
+            Tool = tool,
+            Billboard = billboard,
+            Frame = frame,
+            GlowFrame = glowFrame,
+            Label = label,
+            Arrow = arrow
+        })
+        
+        -- Animate the glow
+        spawn(function()
+            local startTime = tick()
+            while billboard and billboard.Parent do
+                local elapsed = tick() - startTime
+                local pulse = 0.5 + 0.5 * math.sin(elapsed * 2.5)
+                
+                if glowFrame then
+                    glowFrame.BackgroundTransparency = 0.4 + (0.4 * pulse)
+                    glowFrame.Size = UDim2.new(1.1 + (0.3 * pulse), 0, 1.5 + (0.5 * pulse), 0)
+                end
+                
+                if frame then
+                    frame.BackgroundTransparency = 0.1 + (0.2 * pulse)
+                    frame.BorderColor3 = Color3.fromRGB(255, 200 + (55 * pulse), 0)
+                end
+                
+                if arrow then
+                    arrow.Position = UDim2.new(0.5, -15, -1.2 - (0.1 * pulse), 0)
+                end
+                
+                task.wait(0.05)
             end
-            
-            if frame then
-                frame.BackgroundTransparency = 0.2 + (0.2 * pulse)
-            end
-            
-            task.wait(0.05)
-        end
-    end)
+        end)
+        
+        print("🔫 Gun ESP created for dropped gun!")
+    end
 end
 
 local function RemoveGunESP(tool)
@@ -230,20 +261,35 @@ local function RemoveGunESP(tool)
     end
 end
 
+-- SCAN FOR DROPPED GUNS (FIXED)
 local function ScanForDroppedGuns()
     if not gunESPEnabled then return end
     
-    for _, tool in pairs(Workspace:GetDescendants()) do
+    -- Check ALL tools in workspace (dropped guns are directly in workspace)
+    for _, tool in pairs(Workspace:GetChildren()) do
         if tool:IsA("Tool") and tool.Name == "Gun" then
+            -- Check if tool is NOT in a character or backpack
             local isHeld = false
+            
+            -- Check if parent is a character model
             if tool.Parent and tool.Parent:IsA("Model") and tool.Parent:FindFirstChild("Humanoid") then
                 isHeld = true
             end
             
+            -- Check if parent is a backpack
             if tool.Parent and tool.Parent:IsA("Backpack") then
                 isHeld = true
             end
             
+            -- Check if tool is in a player's character through other means
+            if tool.Parent and tool.Parent.Parent then
+                local potentialCharacter = tool.Parent.Parent
+                if potentialCharacter:IsA("Model") and potentialCharacter:FindFirstChild("Humanoid") then
+                    isHeld = true
+                end
+            end
+            
+            -- If not held, it should be dropped on the ground
             if not isHeld then
                 local hasESP = false
                 for _, esp in pairs(gunESPObjects) do
@@ -257,14 +303,27 @@ local function ScanForDroppedGuns()
                     CreateGunESP(tool)
                 end
             else
+                -- If it's being held, remove ESP
                 RemoveGunESP(tool)
             end
         end
     end
     
+    -- Also check models that might be holding guns (like corpses)
+    for _, model in pairs(Workspace:GetChildren()) do
+        if model:IsA("Model") and model:FindFirstChild("Humanoid") then
+            for _, tool in pairs(model:GetChildren()) do
+                if tool:IsA("Tool") and tool.Name == "Gun" then
+                    RemoveGunESP(tool)
+                end
+            end
+        end
+    end
+    
+    -- Clean up ESP for guns that no longer exist
     for i = #gunESPObjects, 1, -1 do
         local esp = gunESPObjects[i]
-        if not esp.Tool or not esp.Tool.Parent then
+        if not esp.Tool or not esp.Tool.Parent or esp.Tool.Parent == nil then
             if esp.Billboard then esp.Billboard:Destroy() end
             table.remove(gunESPObjects, i)
         end
@@ -328,7 +387,7 @@ local function ToggleESP()
             end)
         end)
         
-        print("Glow ESP Enabled")
+        print("✅ Glow ESP Enabled")
     else
         if espConnection then espConnection:Disconnect() end
         if playerAddedConnection then playerAddedConnection:Disconnect() end
@@ -339,7 +398,7 @@ local function ToggleESP()
             if esp.Highlight then esp.Highlight:Destroy() end
         end
         espObjects = {}
-        print("Glow ESP Disabled")
+        print("❌ Glow ESP Disabled")
     end
 end
 
@@ -347,27 +406,37 @@ local function ToggleGunESP()
     gunESPEnabled = not gunESPEnabled
     
     if gunESPEnabled then
+        -- Clear existing gun ESP
         for _, esp in pairs(gunESPObjects) do
             if esp.Billboard then esp.Billboard:Destroy() end
         end
         gunESPObjects = {}
         
+        -- Initial scan
         ScanForDroppedGuns()
         
+        -- Scan every frame
         gunScanConnection = RunService.RenderStepped:Connect(function()
             if gunESPEnabled then
                 ScanForDroppedGuns()
             end
         end)
         
-        toolAddedConnection = Workspace.DescendantAdded:Connect(function(descendant)
-            if gunESPEnabled and descendant:IsA("Tool") and descendant.Name == "Gun" then
-                task.wait(0.1)
-                ScanForDroppedGuns()
+        -- Also scan when new objects are added
+        toolAddedConnection = Workspace.ChildAdded:Connect(function(child)
+            if gunESPEnabled then
+                if child:IsA("Tool") and child.Name == "Gun" then
+                    task.wait(0.1)
+                    ScanForDroppedGuns()
+                elseif child:IsA("Model") then
+                    -- Check if model has guns
+                    task.wait(0.1)
+                    ScanForDroppedGuns()
+                end
             end
         end)
         
-        print("Gun ESP Enabled")
+        print("🔫 Gun ESP Enabled - Will show dropped guns!")
     else
         if gunScanConnection then gunScanConnection:Disconnect() end
         if toolAddedConnection then toolAddedConnection:Disconnect() end
@@ -376,11 +445,11 @@ local function ToggleGunESP()
             if esp.Billboard then esp.Billboard:Destroy() end
         end
         gunESPObjects = {}
-        print("Gun ESP Disabled")
+        print("❌ Gun ESP Disabled")
     end
 end
 
--- ===== SIMPLE AIM FUNCTIONS (FIXED) =====
+-- ===== SIMPLE AIM FUNCTIONS =====
 local function GetMurderer()
     for _, v in pairs(Players:GetPlayers()) do
         if v ~= LocalPlayer then
@@ -401,7 +470,6 @@ local function EquipGun()
     return LocalPlayer.Character:FindFirstChild("Gun")
 end
 
--- SIMPLE, CLEAN AIM PREDICTION
 local function ShootMurderer()
     local murderer = GetMurderer()
     if not murderer or not murderer.Character then return end
@@ -417,11 +485,8 @@ local function ShootMurderer()
     local shootRemote = gun:FindFirstChild("Shoot")
     if not shootRemote then return end
 
-    -- SIMPLE PREDICTION - Just velocity + offset
     local velocity = targetHRP.AssemblyLinearVelocity
     local predicted = targetHRP.Position + (velocity * prediction)
-    
-    -- Simple vertical offset
     predicted = predicted + Vector3.new(0, verticalOffset, 0)
 
     local args = {
@@ -437,7 +502,6 @@ local function AutoShootLoop()
     
     local murderer = GetMurderer()
     if murderer then
-        -- Check if murderer is on screen
         local targetPos = murderer.Character:FindFirstChild("HumanoidRootPart")
         if targetPos then
             local screenPos, onScreen = Camera:WorldToViewportPoint(targetPos.Position)
@@ -612,10 +676,10 @@ SettingsTab:CreateSlider({
 -- ===== INITIALIZATION =====
 if isMobile then
     CreateMobileGUI()
-    print("Mobile mode detected!")
+    print("📱 Mobile mode detected!")
 end
 
 print("✅ Script Loaded!")
 print("🔴 Murderer | 🔵 Sheriff | 🟢 Innocent")
-print("Aim simplified for better accuracy!")
-print("Adjust Prediction & Offset in Settings tab if needed")
+print("🔫 Gun ESP will show dropped guns with pulsing yellow markers!")
+print("⚙️ Adjust Prediction & Offset in Settings tab if needed")
