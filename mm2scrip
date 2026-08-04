@@ -19,10 +19,8 @@ local prediction = 0.22
 -- ESP Variables
 local espEnabled = false
 local espObjects = {}
-local espFolder = nil
 
 -- Mobile button variables
-local mobileButton = nil
 local isMobile = UserInputService.TouchEnabled
 
 -- Function to get player role
@@ -39,7 +37,7 @@ local function GetPlayerRole(player)
         return "Sheriff"
     end
     
-    -- Check if innocent (has no weapons)
+    -- Check if innocent (no weapons)
     local hasWeapon = false
     for _, tool in pairs(player.Backpack:GetChildren()) do
         if tool:IsA("Tool") then
@@ -76,67 +74,41 @@ local function GetRoleColor(role)
     end
 end
 
--- Create ESP for a player
+-- Create ESP outline for a player
 local function CreateESP(player)
     if not player or player == LocalPlayer then return end
     if not player.Character then return end
     
-    local head = player.Character:FindFirstChild("Head")
-    if not head then return end
+    local character = player.Character
     
-    -- Create BillboardGui
-    local billboard = Instance.new("BillboardGui")
-    billboard.Name = "ESP_" .. player.Name
-    billboard.Size = UDim2.new(0, 200, 0, 50)
-    billboard.Adornee = head
-    billboard.AlwaysOnTop = true
-    billboard.StudsOffset = Vector3.new(0, 2.5, 0)
-    billboard.Parent = head
+    -- Get the root part for the box outline
+    local rootPart = character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
+    if not rootPart then return end
     
-    -- Create Frame for background
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, 0, 1, 0)
-    frame.BackgroundTransparency = 0.5
-    frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-    frame.BorderSizePixel = 2
-    frame.Parent = billboard
-    
-    -- Create TextLabel for player name and role
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, 0, 1, 0)
-    label.BackgroundTransparency = 1
-    label.Text = player.Name
-    label.TextSize = 14
-    label.TextColor3 = Color3.fromRGB(255, 255, 255)
-    label.Font = Enum.Font.SourceSansBold
-    label.TextStrokeTransparency = 0.3
-    label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    label.Parent = frame
+    -- Get player role and color
+    local role = GetPlayerRole(player)
+    local color = GetRoleColor(role)
     
     -- Create Box Outline (3D Box ESP)
     local boxOutline = Instance.new("BoxHandleAdornment")
     boxOutline.Name = "BoxESP_" .. player.Name
     boxOutline.Size = Vector3.new(3.5, 5, 1.5)
-    boxOutline.Adornee = player.Character:FindFirstChild("HumanoidRootPart") or player.Character:FindFirstChild("UpperTorso")
+    boxOutline.Adornee = rootPart
     boxOutline.AlwaysOnTop = true
     boxOutline.ZIndex = 0
-    boxOutline.Transparency = 0.3
-    boxOutline.Parent = player.Character
+    boxOutline.Transparency = 0.2
+    boxOutline.Color3 = color
+    boxOutline.Parent = character
     
-    -- Store ESP objects for later removal
+    -- Store ESP object for later removal/update
     table.insert(espObjects, {
         Player = player,
-        Billboard = billboard,
         Box = boxOutline,
-        Frame = frame,
-        Label = label
+        RootPart = rootPart
     })
-    
-    -- Update color based on role
-    UpdateESPColor(player)
 end
 
--- Update ESP color based on role
+-- Update ESP color for a player
 local function UpdateESPColor(player)
     if not player then return end
     
@@ -144,17 +116,8 @@ local function UpdateESPColor(player)
     local color = GetRoleColor(role)
     
     for _, esp in pairs(espObjects) do
-        if esp.Player == player then
-            if esp.Frame then
-                esp.Frame.BorderColor3 = color
-            end
-            if esp.Box then
-                esp.Box.Color3 = color
-            end
-            if esp.Label then
-                esp.Label.Text = player.Name .. " [" .. role .. "]"
-                esp.Label.TextColor3 = color
-            end
+        if esp.Player == player and esp.Box then
+            esp.Box.Color3 = color
             break
         end
     end
@@ -164,7 +127,6 @@ end
 local function RemoveESP(player)
     for i, esp in pairs(espObjects) do
         if esp.Player == player then
-            if esp.Billboard then esp.Billboard:Destroy() end
             if esp.Box then esp.Box:Destroy() end
             table.remove(espObjects, i)
             break
@@ -177,26 +139,34 @@ local function UpdateAllESP()
     for _, player in pairs(Players:GetPlayers()) do
         if player ~= LocalPlayer then
             local hasESP = false
+            local espToUpdate = nil
+            
             for _, esp in pairs(espObjects) do
                 if esp.Player == player then
                     hasESP = true
+                    espToUpdate = esp
                     break
                 end
             end
             
             if not hasESP and player.Character then
                 CreateESP(player)
-            elseif hasESP then
-                UpdateESPColor(player)
+            elseif hasESP and espToUpdate then
+                -- Check if the box still exists and is valid
+                if not espToUpdate.Box or not espToUpdate.Box.Parent then
+                    RemoveESP(player)
+                    CreateESP(player)
+                else
+                    UpdateESPColor(player)
+                end
             end
         end
     end
     
-    -- Remove ESP for players that left
+    -- Remove ESP for players that left or don't have a character
     for i = #espObjects, 1, -1 do
         local esp = espObjects[i]
-        if not esp.Player or not esp.Player.Parent then
-            if esp.Billboard then esp.Billboard:Destroy() end
+        if not esp.Player or not esp.Player.Parent or not esp.Player.Character then
             if esp.Box then esp.Box:Destroy() end
             table.remove(espObjects, i)
         end
@@ -210,7 +180,6 @@ local function ToggleESP()
     if espEnabled then
         -- Clear existing ESP
         for _, esp in pairs(espObjects) do
-            if esp.Billboard then esp.Billboard:Destroy() end
             if esp.Box then esp.Box:Destroy() end
         end
         espObjects = {}
@@ -245,19 +214,31 @@ local function ToggleESP()
         end)
         
         -- Character added event for role changes
-        characterAddedConnection = Players.PlayerAdded:Connect(function(player)
+        local function onCharacterAdded(player)
             if espEnabled then
+                task.wait(0.5)
+                RemoveESP(player)
+                CreateESP(player)
+            end
+        end
+        
+        -- Connect character added for all existing players
+        for _, player in pairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer then
                 player.CharacterAdded:Connect(function()
-                    task.wait(0.5)
-                    if espEnabled then
-                        RemoveESP(player)
-                        CreateESP(player)
-                    end
+                    onCharacterAdded(player)
                 end)
             end
+        end
+        
+        -- Connect for future players
+        characterAddedConnection = Players.PlayerAdded:Connect(function(player)
+            player.CharacterAdded:Connect(function()
+                onCharacterAdded(player)
+            end)
         end)
         
-        print("ESP Enabled - Murderer: Red, Sheriff: Blue, Innocent: Green")
+        print("ESP Enabled - Murderer: 🔴 Red | Sheriff: 🔵 Blue | Innocent: 🟢 Green")
     else
         -- Disable ESP
         if espConnection then espConnection:Disconnect() end
@@ -266,7 +247,6 @@ local function ToggleESP()
         if characterAddedConnection then characterAddedConnection:Disconnect() end
         
         for _, esp in pairs(espObjects) do
-            if esp.Billboard then esp.Billboard:Destroy() end
             if esp.Box then esp.Box:Destroy() end
         end
         espObjects = {}
