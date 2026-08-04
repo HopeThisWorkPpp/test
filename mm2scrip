@@ -12,13 +12,269 @@ local Tab = Window:CreateTab("Main")
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
 
 local prediction = 0.22
+
+-- ESP Variables
+local espEnabled = false
+local espObjects = {}
+local espFolder = nil
 
 -- Mobile button variables
 local mobileButton = nil
 local isMobile = UserInputService.TouchEnabled
 
+-- Function to get player role
+local function GetPlayerRole(player)
+    if not player or not player.Character then return "Unknown" end
+    
+    -- Check if murderer (has knife)
+    if player.Backpack:FindFirstChild("Knife") or (player.Character and player.Character:FindFirstChild("Knife")) then
+        return "Murderer"
+    end
+    
+    -- Check if sheriff (has gun)
+    if player.Backpack:FindFirstChild("Gun") or (player.Character and player.Character:FindFirstChild("Gun")) then
+        return "Sheriff"
+    end
+    
+    -- Check if innocent (has no weapons)
+    local hasWeapon = false
+    for _, tool in pairs(player.Backpack:GetChildren()) do
+        if tool:IsA("Tool") then
+            hasWeapon = true
+            break
+        end
+    end
+    if not hasWeapon then
+        for _, tool in pairs(player.Character:GetChildren()) do
+            if tool:IsA("Tool") then
+                hasWeapon = true
+                break
+            end
+        end
+    end
+    
+    if not hasWeapon then
+        return "Innocent"
+    end
+    
+    return "Unknown"
+end
+
+-- Function to get color for role
+local function GetRoleColor(role)
+    if role == "Murderer" then
+        return Color3.fromRGB(255, 0, 0) -- Red
+    elseif role == "Sheriff" then
+        return Color3.fromRGB(0, 150, 255) -- Blue
+    elseif role == "Innocent" then
+        return Color3.fromRGB(0, 255, 0) -- Green
+    else
+        return Color3.fromRGB(255, 255, 255) -- White
+    end
+end
+
+-- Create ESP for a player
+local function CreateESP(player)
+    if not player or player == LocalPlayer then return end
+    if not player.Character then return end
+    
+    local head = player.Character:FindFirstChild("Head")
+    if not head then return end
+    
+    -- Create BillboardGui
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "ESP_" .. player.Name
+    billboard.Size = UDim2.new(0, 200, 0, 50)
+    billboard.Adornee = head
+    billboard.AlwaysOnTop = true
+    billboard.StudsOffset = Vector3.new(0, 2.5, 0)
+    billboard.Parent = head
+    
+    -- Create Frame for background
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, 0, 1, 0)
+    frame.BackgroundTransparency = 0.5
+    frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    frame.BorderSizePixel = 2
+    frame.Parent = billboard
+    
+    -- Create TextLabel for player name and role
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, 0, 1, 0)
+    label.BackgroundTransparency = 1
+    label.Text = player.Name
+    label.TextSize = 14
+    label.TextColor3 = Color3.fromRGB(255, 255, 255)
+    label.Font = Enum.Font.SourceSansBold
+    label.TextStrokeTransparency = 0.3
+    label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    label.Parent = frame
+    
+    -- Create Box Outline (3D Box ESP)
+    local boxOutline = Instance.new("BoxHandleAdornment")
+    boxOutline.Name = "BoxESP_" .. player.Name
+    boxOutline.Size = Vector3.new(3.5, 5, 1.5)
+    boxOutline.Adornee = player.Character:FindFirstChild("HumanoidRootPart") or player.Character:FindFirstChild("UpperTorso")
+    boxOutline.AlwaysOnTop = true
+    boxOutline.ZIndex = 0
+    boxOutline.Transparency = 0.3
+    boxOutline.Parent = player.Character
+    
+    -- Store ESP objects for later removal
+    table.insert(espObjects, {
+        Player = player,
+        Billboard = billboard,
+        Box = boxOutline,
+        Frame = frame,
+        Label = label
+    })
+    
+    -- Update color based on role
+    UpdateESPColor(player)
+end
+
+-- Update ESP color based on role
+local function UpdateESPColor(player)
+    if not player then return end
+    
+    local role = GetPlayerRole(player)
+    local color = GetRoleColor(role)
+    
+    for _, esp in pairs(espObjects) do
+        if esp.Player == player then
+            if esp.Frame then
+                esp.Frame.BorderColor3 = color
+            end
+            if esp.Box then
+                esp.Box.Color3 = color
+            end
+            if esp.Label then
+                esp.Label.Text = player.Name .. " [" .. role .. "]"
+                esp.Label.TextColor3 = color
+            end
+            break
+        end
+    end
+end
+
+-- Remove ESP for a player
+local function RemoveESP(player)
+    for i, esp in pairs(espObjects) do
+        if esp.Player == player then
+            if esp.Billboard then esp.Billboard:Destroy() end
+            if esp.Box then esp.Box:Destroy() end
+            table.remove(espObjects, i)
+            break
+        end
+    end
+end
+
+-- Update all ESPs
+local function UpdateAllESP()
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local hasESP = false
+            for _, esp in pairs(espObjects) do
+                if esp.Player == player then
+                    hasESP = true
+                    break
+                end
+            end
+            
+            if not hasESP and player.Character then
+                CreateESP(player)
+            elseif hasESP then
+                UpdateESPColor(player)
+            end
+        end
+    end
+    
+    -- Remove ESP for players that left
+    for i = #espObjects, 1, -1 do
+        local esp = espObjects[i]
+        if not esp.Player or not esp.Player.Parent then
+            if esp.Billboard then esp.Billboard:Destroy() end
+            if esp.Box then esp.Box:Destroy() end
+            table.remove(espObjects, i)
+        end
+    end
+end
+
+-- Toggle ESP
+local function ToggleESP()
+    espEnabled = not espEnabled
+    
+    if espEnabled then
+        -- Clear existing ESP
+        for _, esp in pairs(espObjects) do
+            if esp.Billboard then esp.Billboard:Destroy() end
+            if esp.Box then esp.Box:Destroy() end
+        end
+        espObjects = {}
+        
+        -- Create ESP for all players
+        for _, player in pairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer then
+                CreateESP(player)
+            end
+        end
+        
+        -- Start update loop
+        espConnection = RunService.RenderStepped:Connect(function()
+            if espEnabled then
+                UpdateAllESP()
+            end
+        end)
+        
+        -- Connect player added event
+        playerAddedConnection = Players.PlayerAdded:Connect(function(player)
+            if espEnabled then
+                task.wait(0.5) -- Wait for character to load
+                CreateESP(player)
+            end
+        end)
+        
+        -- Connect player removed event
+        playerRemovedConnection = Players.PlayerRemoved:Connect(function(player)
+            if espEnabled then
+                RemoveESP(player)
+            end
+        end)
+        
+        -- Character added event for role changes
+        characterAddedConnection = Players.PlayerAdded:Connect(function(player)
+            if espEnabled then
+                player.CharacterAdded:Connect(function()
+                    task.wait(0.5)
+                    if espEnabled then
+                        RemoveESP(player)
+                        CreateESP(player)
+                    end
+                end)
+            end
+        end)
+        
+        print("ESP Enabled - Murderer: Red, Sheriff: Blue, Innocent: Green")
+    else
+        -- Disable ESP
+        if espConnection then espConnection:Disconnect() end
+        if playerAddedConnection then playerAddedConnection:Disconnect() end
+        if playerRemovedConnection then playerRemovedConnection:Disconnect() end
+        if characterAddedConnection then characterAddedConnection:Disconnect() end
+        
+        for _, esp in pairs(espObjects) do
+            if esp.Billboard then esp.Billboard:Destroy() end
+            if esp.Box then esp.Box:Destroy() end
+        end
+        espObjects = {}
+        print("ESP Disabled")
+    end
+end
+
+-- Original functions
 local function GetMurderer()
     for _,v in pairs(Players:GetPlayers()) do
         if v ~= LocalPlayer then
@@ -65,7 +321,18 @@ local function ShootMurderer()
     shootRemote:FireServer(unpack(args))
 end
 
--- PC Keybind (works for both PC and mobile but keyboard won't show on mobile)
+-- RAYFIELD UI BUTTONS
+
+-- ESP Toggle Button
+Tab:CreateToggle({
+    Name = "ESP (Murderer: Red | Sheriff: Blue | Innocent: Green)",
+    CurrentValue = false,
+    Callback = function(Value)
+        ToggleESP()
+    end
+})
+
+-- Shoot Button (Keyboard)
 Tab:CreateKeybind({
     Name = "Shoot Murderer (Keyboard)",
     CurrentKeybind = "Q",
@@ -75,29 +342,25 @@ Tab:CreateKeybind({
     end
 })
 
--- Mobile GUI Button (Only shows on mobile devices)
+-- Mobile GUI Button
 if isMobile then
-    -- Create a screen GUI for the mobile button
     local screenGui = Instance.new("ScreenGui")
     screenGui.Name = "MurderMysteryMobileGUI"
     screenGui.Parent = LocalPlayer.PlayerGui
     
-    -- Create the shoot button frame
     local buttonFrame = Instance.new("Frame")
     buttonFrame.Size = UDim2.new(0, 120, 0, 120)
-    buttonFrame.Position = UDim2.new(0.85, -60, 0.75, -60) -- Bottom right corner
+    buttonFrame.Position = UDim2.new(0.85, -60, 0.75, -60)
     buttonFrame.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
     buttonFrame.BackgroundTransparency = 0.3
     buttonFrame.BorderSizePixel = 2
     buttonFrame.BorderColor3 = Color3.fromRGB(255, 255, 255)
     buttonFrame.Parent = screenGui
     
-    -- Add corner rounding
     local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(1, 0) -- Makes it a circle
+    corner.CornerRadius = UDim.new(1, 0)
     corner.Parent = buttonFrame
     
-    -- Add a text label
     local buttonLabel = Instance.new("TextLabel")
     buttonLabel.Size = UDim2.new(1, 0, 1, 0)
     buttonLabel.Position = UDim2.new(0, 0, 0, 0)
@@ -108,14 +371,12 @@ if isMobile then
     buttonLabel.Font = Enum.Font.SourceSansBold
     buttonLabel.Parent = buttonFrame
     
-    -- Add click detection
     local button = Instance.new("ImageButton")
     button.Size = UDim2.new(1, 0, 1, 0)
     button.Position = UDim2.new(0, 0, 0, 0)
     button.BackgroundTransparency = 1
     button.Parent = buttonFrame
     
-    -- Button hover/press effects
     button.MouseEnter:Connect(function()
         buttonFrame.BackgroundTransparency = 0.2
     end)
@@ -125,19 +386,18 @@ if isMobile then
     end)
     
     button.MouseButton1Down:Connect(function()
-        buttonFrame.Size = UDim2.new(0, 110, 0, 110) -- Shrink slightly when pressed
+        buttonFrame.Size = UDim2.new(0, 110, 0, 110)
     end)
     
     button.MouseButton1Up:Connect(function()
-        buttonFrame.Size = UDim2.new(0, 120, 0, 120) -- Return to normal size
+        buttonFrame.Size = UDim2.new(0, 120, 0, 120)
     end)
     
-    -- The actual shoot function for mobile
     button.MouseButton1Click:Connect(function()
         ShootMurderer()
     end)
     
-    -- Make button draggable (optional mobile feature)
+    -- Draggable functionality
     local dragging = false
     local dragStart = nil
     local startPos = nil
@@ -159,17 +419,20 @@ if isMobile then
     button.InputChanged:Connect(function(input)
         if dragging and input.UserInputType == Enum.UserInputType.Touch then
             local delta = input.Position - dragStart
+            local viewportSize = game:GetService("GuiService"):GetScreenResolution()
             buttonFrame.Position = UDim2.new(
-                startPos.X.Scale + (delta.X / game:GetService("GuiService").GetScreenResolution().X),
+                startPos.X.Scale + (delta.X / viewportSize.X),
                 0,
-                startPos.Y.Scale + (delta.Y / game:GetService("GuiService").GetScreenResolution().Y),
+                startPos.Y.Scale + (delta.Y / viewportSize.Y),
                 0
             )
         end
     end)
 end
 
--- Status notification for mobile users
+-- Status notification
 if isMobile then
     print("Mobile mode detected! Look for the red shoot button at the bottom right of your screen.")
 end
+
+print("Script loaded! ESP: Murderer=Red, Sheriff=Blue, Innocent=Green")
