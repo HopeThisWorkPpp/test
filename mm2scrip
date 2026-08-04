@@ -6,7 +6,7 @@ local Window = Rayfield:CreateWindow({
     LoadingSubtitle = "Made for Mobile & PC",
     ConfigurationSaving = {
         Enabled = true,
-        FolderName = "MM2Script", -- This saves settings
+        FolderName = "MM2Script",
         FileName = "Settings"
     }
 })
@@ -22,8 +22,8 @@ local Workspace = game:GetService("Workspace")
 local Camera = Workspace.CurrentCamera
 
 -- ===== VARIABLES =====
-local prediction = 0.22
-local verticalOffset = 1.2
+local prediction = 0.185 -- More accurate default
+local verticalOffset = 0.8 -- Lower offset for better accuracy
 local isMobile = UserInputService.TouchEnabled
 local mobileGUI = nil
 local buttonFrame = nil
@@ -31,11 +31,12 @@ local buttonFrame = nil
 -- ESP Variables
 local espEnabled = false
 local espObjects = {}
-local glowEnabled = true
+local gunESPEnabled = false
+local gunESPObjects = {}
 
 -- Auto-shoot variables
 local autoShoot = false
-local fovRadius = 200
+local fovRadius = 300
 
 -- ===== FUNCTIONS =====
 
@@ -84,7 +85,6 @@ local function CreateGlowESP(player)
     local role = GetPlayerRole(player)
     local color = GetRoleColor(role)
     
-    -- Create Highlight for glow effect
     local highlight = Instance.new("Highlight")
     highlight.Name = "GlowESP_" .. player.Name
     highlight.Adornee = character
@@ -133,32 +133,166 @@ local function RemoveGlowESP(player)
     end
 end
 
--- Toggle ESP
+-- ===== GUN ESP FUNCTIONS =====
+local function CreateGunESP(tool)
+    if not tool or not tool:IsA("Tool") then return end
+    if tool.Name ~= "Gun" then return end
+    
+    for _, esp in pairs(gunESPObjects) do
+        if esp.Tool == tool then
+            return
+        end
+    end
+    
+    if tool.Parent and tool.Parent:IsA("Model") and tool.Parent:FindFirstChild("Humanoid") then
+        return
+    end
+    
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "GunESP"
+    billboard.Size = UDim2.new(0, 100, 0, 30)
+    billboard.Adornee = tool
+    billboard.AlwaysOnTop = true
+    billboard.StudsOffset = Vector3.new(0, 1.5, 0)
+    billboard.MaxDistance = 100
+    billboard.Parent = tool
+    
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, 0, 1, 0)
+    frame.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
+    frame.BackgroundTransparency = 0.3
+    frame.BorderSizePixel = 2
+    frame.BorderColor3 = Color3.fromRGB(255, 255, 255)
+    frame.Parent = billboard
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 5)
+    corner.Parent = frame
+    
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, 0, 1, 0)
+    label.BackgroundTransparency = 1
+    label.Text = "🔫 GUN DROPPED!"
+    label.TextSize = 14
+    label.TextColor3 = Color3.fromRGB(255, 255, 255)
+    label.Font = Enum.Font.SourceSansBold
+    label.TextStrokeTransparency = 0.3
+    label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    label.Parent = frame
+    
+    local glowFrame = Instance.new("Frame")
+    glowFrame.Size = UDim2.new(1.2, 0, 1.5, 0)
+    glowFrame.Position = UDim2.new(-0.1, 0, -0.25, 0)
+    glowFrame.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
+    glowFrame.BackgroundTransparency = 0.7
+    glowFrame.BorderSizePixel = 0
+    glowFrame.Parent = billboard
+    
+    local glowCorner = Instance.new("UICorner")
+    glowCorner.CornerRadius = UDim.new(0, 10)
+    glowCorner.Parent = glowFrame
+    
+    table.insert(gunESPObjects, {
+        Tool = tool,
+        Billboard = billboard,
+        Frame = frame,
+        GlowFrame = glowFrame,
+        Label = label
+    })
+    
+    spawn(function()
+        local startTime = tick()
+        while billboard and billboard.Parent do
+            local elapsed = tick() - startTime
+            local pulse = 0.5 + 0.5 * math.sin(elapsed * 3)
+            
+            if glowFrame then
+                glowFrame.BackgroundTransparency = 0.4 + (0.4 * pulse)
+                glowFrame.Size = UDim2.new(1.1 + (0.2 * pulse), 0, 1.3 + (0.4 * pulse), 0)
+            end
+            
+            if frame then
+                frame.BackgroundTransparency = 0.2 + (0.2 * pulse)
+            end
+            
+            task.wait(0.05)
+        end
+    end)
+end
+
+local function RemoveGunESP(tool)
+    for i, esp in pairs(gunESPObjects) do
+        if esp.Tool == tool then
+            if esp.Billboard then esp.Billboard:Destroy() end
+            table.remove(gunESPObjects, i)
+            break
+        end
+    end
+end
+
+local function ScanForDroppedGuns()
+    if not gunESPEnabled then return end
+    
+    for _, tool in pairs(Workspace:GetDescendants()) do
+        if tool:IsA("Tool") and tool.Name == "Gun" then
+            local isHeld = false
+            if tool.Parent and tool.Parent:IsA("Model") and tool.Parent:FindFirstChild("Humanoid") then
+                isHeld = true
+            end
+            
+            if tool.Parent and tool.Parent:IsA("Backpack") then
+                isHeld = true
+            end
+            
+            if not isHeld then
+                local hasESP = false
+                for _, esp in pairs(gunESPObjects) do
+                    if esp.Tool == tool then
+                        hasESP = true
+                        break
+                    end
+                end
+                
+                if not hasESP then
+                    CreateGunESP(tool)
+                end
+            else
+                RemoveGunESP(tool)
+            end
+        end
+    end
+    
+    for i = #gunESPObjects, 1, -1 do
+        local esp = gunESPObjects[i]
+        if not esp.Tool or not esp.Tool.Parent then
+            if esp.Billboard then esp.Billboard:Destroy() end
+            table.remove(gunESPObjects, i)
+        end
+    end
+end
+
+-- ===== TOGGLE FUNCTIONS =====
 local function ToggleESP()
     espEnabled = not espEnabled
     
     if espEnabled then
-        -- Clear existing
         for _, esp in pairs(espObjects) do
             if esp.Highlight then esp.Highlight:Destroy() end
         end
         espObjects = {}
         
-        -- Create ESP for all players
         for _, player in pairs(Players:GetPlayers()) do
             if player ~= LocalPlayer then
                 CreateGlowESP(player)
             end
         end
         
-        -- Start update loop
         espConnection = RunService.RenderStepped:Connect(function()
             if espEnabled then
                 UpdateGlowESP()
             end
         end)
         
-        -- Player added
         playerAddedConnection = Players.PlayerAdded:Connect(function(player)
             if espEnabled then
                 task.wait(0.5)
@@ -166,14 +300,12 @@ local function ToggleESP()
             end
         end)
         
-        -- Player removed
         playerRemovedConnection = Players.PlayerRemoved:Connect(function(player)
             if espEnabled then
                 RemoveGlowESP(player)
             end
         end)
         
-        -- Character added for role changes
         local function onCharacterAdded(player)
             if espEnabled then
                 task.wait(0.5)
@@ -196,9 +328,8 @@ local function ToggleESP()
             end)
         end)
         
-        print("Glow ESP Enabled - 🔴Murderer | 🔵Sheriff | 🟢Innocent")
+        print("Glow ESP Enabled")
     else
-        -- Disable ESP
         if espConnection then espConnection:Disconnect() end
         if playerAddedConnection then playerAddedConnection:Disconnect() end
         if playerRemovedConnection then playerRemovedConnection:Disconnect() end
@@ -212,35 +343,53 @@ local function ToggleESP()
     end
 end
 
--- ===== AIM FUNCTIONS =====
-local function GetMurderer()
-    local bestTarget = nil
-    local bestDistance = math.huge
+local function ToggleGunESP()
+    gunESPEnabled = not gunESPEnabled
     
+    if gunESPEnabled then
+        for _, esp in pairs(gunESPObjects) do
+            if esp.Billboard then esp.Billboard:Destroy() end
+        end
+        gunESPObjects = {}
+        
+        ScanForDroppedGuns()
+        
+        gunScanConnection = RunService.RenderStepped:Connect(function()
+            if gunESPEnabled then
+                ScanForDroppedGuns()
+            end
+        end)
+        
+        toolAddedConnection = Workspace.DescendantAdded:Connect(function(descendant)
+            if gunESPEnabled and descendant:IsA("Tool") and descendant.Name == "Gun" then
+                task.wait(0.1)
+                ScanForDroppedGuns()
+            end
+        end)
+        
+        print("Gun ESP Enabled")
+    else
+        if gunScanConnection then gunScanConnection:Disconnect() end
+        if toolAddedConnection then toolAddedConnection:Disconnect() end
+        
+        for _, esp in pairs(gunESPObjects) do
+            if esp.Billboard then esp.Billboard:Destroy() end
+        end
+        gunESPObjects = {}
+        print("Gun ESP Disabled")
+    end
+end
+
+-- ===== SIMPLE AIM FUNCTIONS (FIXED) =====
+local function GetMurderer()
     for _, v in pairs(Players:GetPlayers()) do
-        if v ~= LocalPlayer and v.Character then
-            local hasKnife = v.Backpack:FindFirstChild("Knife") or (v.Character and v.Character:FindFirstChild("Knife"))
-            if hasKnife then
-                if autoShoot then
-                    local targetPos = v.Character:FindFirstChild("HumanoidRootPart")
-                    if targetPos then
-                        local screenPos, onScreen = Camera:WorldToViewportPoint(targetPos.Position)
-                        if onScreen then
-                            local distance = (Vector2.new(screenPos.X, screenPos.Y) - Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)).Magnitude
-                            if distance < fovRadius and distance < bestDistance then
-                                bestDistance = distance
-                                bestTarget = v
-                            end
-                        end
-                    end
-                else
-                    return v
-                end
+        if v ~= LocalPlayer then
+            if v.Backpack:FindFirstChild("Knife") or (v.Character and v.Character:FindFirstChild("Knife")) then
+                return v
             end
         end
     end
-    
-    return bestTarget
+    return nil
 end
 
 local function EquipGun()
@@ -252,6 +401,7 @@ local function EquipGun()
     return LocalPlayer.Character:FindFirstChild("Gun")
 end
 
+-- SIMPLE, CLEAN AIM PREDICTION
 local function ShootMurderer()
     local murderer = GetMurderer()
     if not murderer or not murderer.Character then return end
@@ -267,36 +417,13 @@ local function ShootMurderer()
     local shootRemote = gun:FindFirstChild("Shoot")
     if not shootRemote then return end
 
-    -- AIM PREDICTION
-    local targetPos = targetHRP.Position
+    -- SIMPLE PREDICTION - Just velocity + offset
     local velocity = targetHRP.AssemblyLinearVelocity
-    local humanoid = murderer.Character:FindFirstChild("Humanoid")
+    local predicted = targetHRP.Position + (velocity * prediction)
     
-    local predicted = targetPos + (velocity * prediction)
-    
-    -- Jump detection
-    local isJumping = humanoid and humanoid:GetState() == Enum.HumanoidStateType.Jumping
-    if isJumping then
-        local jumpHeight = 3.5
-        predicted = predicted + Vector3.new(0, jumpHeight, 0)
-        
-        local verticalVelocity = velocity.Y
-        if verticalVelocity > 0 then
-            predicted = predicted + Vector3.new(0, verticalVelocity * 0.15, 0)
-        elseif verticalVelocity < 0 then
-            predicted = predicted + Vector3.new(0, verticalVelocity * 0.1, 0)
-        end
-    else
-        predicted = predicted + Vector3.new(0, verticalOffset, 0)
-    end
-    
-    -- Running prediction
-    local horizontalSpeed = Vector3.new(velocity.X, 0, velocity.Z).Magnitude
-    if horizontalSpeed > 10 then
-        predicted = predicted + (velocity * 0.05 * 1.2)
-    end
+    -- Simple vertical offset
+    predicted = predicted + Vector3.new(0, verticalOffset, 0)
 
-    -- Fire
     local args = {
         CFrame.new(myHRP.Position, predicted),
         CFrame.new(predicted)
@@ -310,8 +437,18 @@ local function AutoShootLoop()
     
     local murderer = GetMurderer()
     if murderer then
-        ShootMurderer()
-        task.wait(math.random(100, 300) / 1000)
+        -- Check if murderer is on screen
+        local targetPos = murderer.Character:FindFirstChild("HumanoidRootPart")
+        if targetPos then
+            local screenPos, onScreen = Camera:WorldToViewportPoint(targetPos.Position)
+            if onScreen then
+                local distance = (Vector2.new(screenPos.X, screenPos.Y) - Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)).Magnitude
+                if distance < fovRadius then
+                    ShootMurderer()
+                    task.wait(math.random(150, 350) / 1000)
+                end
+            end
+        end
     end
 end
 
@@ -354,13 +491,12 @@ local function CreateMobileGUI()
     
     button.MouseButton1Click:Connect(function()
         if autoShoot then
-            print("Auto-shoot is on! Toggle it off for manual shooting.")
+            print("Auto-shoot is on!")
         else
             ShootMurderer()
         end
     end)
     
-    -- Draggable
     local dragging = false
     local dragStart, startPos
     
@@ -394,12 +530,19 @@ end
 
 -- ===== RAYFIELD UI =====
 
--- Main Tab
 MainTab:CreateToggle({
-    Name = "Glow ESP (Murderer: Red | Sheriff: Blue | Innocent: Green)",
+    Name = "Glow ESP",
     CurrentValue = false,
     Callback = function(Value)
         ToggleESP()
+    end
+})
+
+MainTab:CreateToggle({
+    Name = "Gun ESP (Dropped Guns)",
+    CurrentValue = false,
+    Callback = function(Value)
+        ToggleGunESP()
     end
 })
 
@@ -409,7 +552,7 @@ MainTab:CreateToggle({
     Callback = function(Value)
         autoShoot = Value
         if Value then
-            print("Auto-shoot enabled! Will shoot when murderer is in sight.")
+            print("Auto-shoot enabled!")
             spawn(function()
                 while autoShoot do
                     AutoShootLoop()
@@ -423,7 +566,7 @@ MainTab:CreateToggle({
 })
 
 MainTab:CreateKeybind({
-    Name = "Manual Shoot (Keyboard)",
+    Name = "Manual Shoot (Q)",
     CurrentKeybind = "Q",
     HoldToInteract = false,
     Callback = function()
@@ -433,46 +576,46 @@ MainTab:CreateKeybind({
     end
 })
 
--- Settings Tab
 SettingsTab:CreateSlider({
     Name = "Prediction Time",
-    Range = {0.1, 0.5},
-    Increment = 0.01,
+    Range = {0.1, 0.3},
+    Increment = 0.005,
     Suffix = "s",
-    CurrentValue = 0.22,
+    CurrentValue = 0.185,
     Callback = function(Value)
         prediction = Value
     end
 })
 
 SettingsTab:CreateSlider({
-    Name = "FOV Radius (Auto-Shoot)",
-    Range = {50, 500},
-    Increment = 10,
-    Suffix = "px",
-    CurrentValue = 200,
+    Name = "Vertical Offset",
+    Range = {0.3, 2.0},
+    Increment = 0.05,
+    Suffix = "studs",
+    CurrentValue = 0.8,
     Callback = function(Value)
-        fovRadius = Value
+        verticalOffset = Value
     end
 })
 
 SettingsTab:CreateSlider({
-    Name = "Vertical Offset",
-    Range = {0.5, 3.0},
-    Increment = 0.1,
-    Suffix = "studs",
-    CurrentValue = 1.2,
+    Name = "Auto-Shoot FOV",
+    Range = {50, 500},
+    Increment = 10,
+    Suffix = "px",
+    CurrentValue = 300,
     Callback = function(Value)
-        verticalOffset = Value
+        fovRadius = Value
     end
 })
 
 -- ===== INITIALIZATION =====
 if isMobile then
     CreateMobileGUI()
-    print("Mobile mode detected! Button will stay between rounds.")
+    print("Mobile mode detected!")
 end
 
-print("Script Loaded! Glow ESP + Auto-Shoot + Settings Saved!")
+print("✅ Script Loaded!")
 print("🔴 Murderer | 🔵 Sheriff | 🟢 Innocent")
-print("Settings will auto-save when you change them!")
+print("Aim simplified for better accuracy!")
+print("Adjust Prediction & Offset in Settings tab if needed")
