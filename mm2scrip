@@ -1,35 +1,44 @@
 local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
 
 local Window = Rayfield:CreateWindow({
-    Name = "<@1465775865362387147>",
-    LoadingTitle = "<@1465775865362387147>",
-    LoadingSubtitle = "<@1465775865362387147>",
-    ConfigurationSaving = {Enabled = false}
+    Name = "MM2 Enhanced",
+    LoadingTitle = "Loading...",
+    LoadingSubtitle = "Made for Mobile & PC",
+    ConfigurationSaving = {
+        Enabled = true,
+        FolderName = "MM2Script", -- This saves settings
+        FileName = "Settings"
+    }
 })
 
-local Tab = Window:CreateTab("Main")
+local MainTab = Window:CreateTab("Main")
+local SettingsTab = Window:CreateTab("Settings")
 
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local Camera = Workspace.CurrentCamera
 
--- IMPROVED PREDICTION VARIABLES
+-- ===== VARIABLES =====
 local prediction = 0.22
-local gravityPrediction = true
-local jumpPrediction = true
 local verticalOffset = 1.2
-
--- ESP Variables
-local espEnabled = false
-local espObjects = {}
-
--- Mobile button variables
 local isMobile = UserInputService.TouchEnabled
 local mobileGUI = nil
 local buttonFrame = nil
 
--- Function to get player role
+-- ESP Variables
+local espEnabled = false
+local espObjects = {}
+local glowEnabled = true
+
+-- Auto-shoot variables
+local autoShoot = false
+local fovRadius = 200
+
+-- ===== FUNCTIONS =====
+
 local function GetPlayerRole(player)
     if not player or not player.Character then return "Unknown" end
     
@@ -57,114 +66,69 @@ local function GetPlayerRole(player)
         end
     end
     
-    if not hasWeapon then
-        return "Innocent"
-    end
-    
-    return "Unknown"
+    return hasWeapon and "Unknown" or "Innocent"
 end
 
--- Function to get color for role
 local function GetRoleColor(role)
-    if role == "Murderer" then
-        return Color3.fromRGB(255, 0, 0)
-    elseif role == "Sheriff" then
-        return Color3.fromRGB(0, 150, 255)
-    elseif role == "Innocent" then
-        return Color3.fromRGB(0, 255, 0)
-    else
-        return Color3.fromRGB(255, 255, 255)
-    end
+    if role == "Murderer" then return Color3.fromRGB(255, 0, 0)
+    elseif role == "Sheriff" then return Color3.fromRGB(0, 150, 255)
+    elseif role == "Innocent" then return Color3.fromRGB(0, 255, 0)
+    else return Color3.fromRGB(255, 255, 255) end
 end
 
--- Create ESP outline for a player
-local function CreateESP(player)
-    if not player or player == LocalPlayer then return end
-    if not player.Character then return end
+-- ===== GLOW ESP FUNCTIONS =====
+local function CreateGlowESP(player)
+    if not player or player == LocalPlayer or not player.Character then return end
     
     local character = player.Character
-    local rootPart = character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
-    if not rootPart then return end
-    
     local role = GetPlayerRole(player)
     local color = GetRoleColor(role)
     
-    local boxOutline = Instance.new("BoxHandleAdornment")
-    boxOutline.Name = "BoxESP_" .. player.Name
-    boxOutline.Size = Vector3.new(3.5, 5, 1.5)
-    boxOutline.Adornee = rootPart
-    boxOutline.AlwaysOnTop = true
-    boxOutline.ZIndex = 0
-    boxOutline.Transparency = 0.2
-    boxOutline.Color3 = color
-    boxOutline.Parent = character
+    -- Create Highlight for glow effect
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "GlowESP_" .. player.Name
+    highlight.Adornee = character
+    highlight.FillColor = color
+    highlight.FillTransparency = 0.5
+    highlight.OutlineColor = color
+    highlight.OutlineTransparency = 0.1
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Parent = character
     
     table.insert(espObjects, {
         Player = player,
-        Box = boxOutline,
-        RootPart = rootPart
+        Highlight = highlight,
+        Color = color
     })
 end
 
--- Update ESP color for a player
-local function UpdateESPColor(player)
-    if not player then return end
-    
-    local role = GetPlayerRole(player)
-    local color = GetRoleColor(role)
+local function UpdateGlowESP()
+    if not espEnabled then return end
     
     for _, esp in pairs(espObjects) do
-        if esp.Player == player and esp.Box then
-            esp.Box.Color3 = color
-            break
+        local player = esp.Player
+        if not player or not player.Character then
+            if esp.Highlight then esp.Highlight:Destroy() end
+            continue
+        end
+        
+        local role = GetPlayerRole(player)
+        local color = GetRoleColor(role)
+        
+        if esp.Highlight then
+            esp.Highlight.FillColor = color
+            esp.Highlight.OutlineColor = color
+            esp.Color = color
         end
     end
 end
 
--- Remove ESP for a player
-local function RemoveESP(player)
+local function RemoveGlowESP(player)
     for i, esp in pairs(espObjects) do
         if esp.Player == player then
-            if esp.Box then esp.Box:Destroy() end
+            if esp.Highlight then esp.Highlight:Destroy() end
             table.remove(espObjects, i)
             break
-        end
-    end
-end
-
--- Update all ESPs
-local function UpdateAllESP()
-    for _, player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer then
-            local hasESP = false
-            local espToUpdate = nil
-            
-            for _, esp in pairs(espObjects) do
-                if esp.Player == player then
-                    hasESP = true
-                    espToUpdate = esp
-                    break
-                end
-            end
-            
-            if not hasESP and player.Character then
-                CreateESP(player)
-            elseif hasESP and espToUpdate then
-                if not espToUpdate.Box or not espToUpdate.Box.Parent then
-                    RemoveESP(player)
-                    CreateESP(player)
-                else
-                    UpdateESPColor(player)
-                end
-            end
-        end
-    end
-    
-    for i = #espObjects, 1, -1 do
-        local esp = espObjects[i]
-        if not esp.Player or not esp.Player.Parent or not esp.Player.Character then
-            if esp.Box then esp.Box:Destroy() end
-            table.remove(espObjects, i)
         end
     end
 end
@@ -174,41 +138,47 @@ local function ToggleESP()
     espEnabled = not espEnabled
     
     if espEnabled then
+        -- Clear existing
         for _, esp in pairs(espObjects) do
-            if esp.Box then esp.Box:Destroy() end
+            if esp.Highlight then esp.Highlight:Destroy() end
         end
         espObjects = {}
         
+        -- Create ESP for all players
         for _, player in pairs(Players:GetPlayers()) do
             if player ~= LocalPlayer then
-                CreateESP(player)
+                CreateGlowESP(player)
             end
         end
         
+        -- Start update loop
         espConnection = RunService.RenderStepped:Connect(function()
             if espEnabled then
-                UpdateAllESP()
+                UpdateGlowESP()
             end
         end)
         
+        -- Player added
         playerAddedConnection = Players.PlayerAdded:Connect(function(player)
             if espEnabled then
                 task.wait(0.5)
-                CreateESP(player)
+                CreateGlowESP(player)
             end
         end)
         
+        -- Player removed
         playerRemovedConnection = Players.PlayerRemoved:Connect(function(player)
             if espEnabled then
-                RemoveESP(player)
+                RemoveGlowESP(player)
             end
         end)
         
+        -- Character added for role changes
         local function onCharacterAdded(player)
             if espEnabled then
                 task.wait(0.5)
-                RemoveESP(player)
-                CreateESP(player)
+                RemoveGlowESP(player)
+                CreateGlowESP(player)
             end
         end
         
@@ -226,30 +196,51 @@ local function ToggleESP()
             end)
         end)
         
-        print("ESP Enabled - Murderer: 🔴 Red | Sheriff: 🔵 Blue | Innocent: 🟢 Green")
+        print("Glow ESP Enabled - 🔴Murderer | 🔵Sheriff | 🟢Innocent")
     else
+        -- Disable ESP
         if espConnection then espConnection:Disconnect() end
         if playerAddedConnection then playerAddedConnection:Disconnect() end
         if playerRemovedConnection then playerRemovedConnection:Disconnect() end
         if characterAddedConnection then characterAddedConnection:Disconnect() end
         
         for _, esp in pairs(espObjects) do
-            if esp.Box then esp.Box:Destroy() end
+            if esp.Highlight then esp.Highlight:Destroy() end
         end
         espObjects = {}
-        print("ESP Disabled")
+        print("Glow ESP Disabled")
     end
 end
 
--- IMPROVED SHOOTING FUNCTION WITH JUMP PREDICTION
+-- ===== AIM FUNCTIONS =====
 local function GetMurderer()
-    for _,v in pairs(Players:GetPlayers()) do
-        if v ~= LocalPlayer then
-            if v.Backpack:FindFirstChild("Knife") or (v.Character and v.Character:FindFirstChild("Knife")) then
-                return v
+    local bestTarget = nil
+    local bestDistance = math.huge
+    
+    for _, v in pairs(Players:GetPlayers()) do
+        if v ~= LocalPlayer and v.Character then
+            local hasKnife = v.Backpack:FindFirstChild("Knife") or (v.Character and v.Character:FindFirstChild("Knife"))
+            if hasKnife then
+                if autoShoot then
+                    local targetPos = v.Character:FindFirstChild("HumanoidRootPart")
+                    if targetPos then
+                        local screenPos, onScreen = Camera:WorldToViewportPoint(targetPos.Position)
+                        if onScreen then
+                            local distance = (Vector2.new(screenPos.X, screenPos.Y) - Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)).Magnitude
+                            if distance < fovRadius and distance < bestDistance then
+                                bestDistance = distance
+                                bestTarget = v
+                            end
+                        end
+                    end
+                else
+                    return v
+                end
             end
         end
     end
+    
+    return bestTarget
 end
 
 local function EquipGun()
@@ -261,7 +252,6 @@ local function EquipGun()
     return LocalPlayer.Character:FindFirstChild("Gun")
 end
 
--- IMPROVED AIM PREDICTION
 local function ShootMurderer()
     local murderer = GetMurderer()
     if not murderer or not murderer.Character then return end
@@ -277,70 +267,36 @@ local function ShootMurderer()
     local shootRemote = gun:FindFirstChild("Shoot")
     if not shootRemote then return end
 
-    -- Get current position and velocity
+    -- AIM PREDICTION
     local targetPos = targetHRP.Position
     local velocity = targetHRP.AssemblyLinearVelocity
-    
-    -- Get the humanoid to check if jumping
     local humanoid = murderer.Character:FindFirstChild("Humanoid")
-    local isJumping = humanoid and humanoid:GetState() == Enum.HumanoidStateType.Jumping
     
-    -- Calculate base prediction
     local predicted = targetPos + (velocity * prediction)
     
-    -- IMPROVED VERTICAL PREDICTION FOR JUMPS
+    -- Jump detection
+    local isJumping = humanoid and humanoid:GetState() == Enum.HumanoidStateType.Jumping
     if isJumping then
-        -- If target is jumping, aim higher
-        local jumpHeight = 3.5 -- How high to aim when jumping
+        local jumpHeight = 3.5
         predicted = predicted + Vector3.new(0, jumpHeight, 0)
         
-        -- Add extra vertical offset based on velocity
         local verticalVelocity = velocity.Y
         if verticalVelocity > 0 then
-            -- Rising: aim higher
             predicted = predicted + Vector3.new(0, verticalVelocity * 0.15, 0)
         elseif verticalVelocity < 0 then
-            -- Falling: aim slightly lower to track descent
             predicted = predicted + Vector3.new(0, verticalVelocity * 0.1, 0)
         end
     else
-        -- Not jumping: use standard offset
         predicted = predicted + Vector3.new(0, verticalOffset, 0)
     end
     
-    -- Add extra prediction for running targets
+    -- Running prediction
     local horizontalSpeed = Vector3.new(velocity.X, 0, velocity.Z).Magnitude
     if horizontalSpeed > 10 then
-        -- Target is running fast, add extra lead
-        local leadMultiplier = 1.2
-        predicted = predicted + (velocity * 0.05 * leadMultiplier)
-    end
-    
-    -- IMPORTANT: Check if target is on the ground vs in air
-    local humanoidRootPart = murderer.Character:FindFirstChild("HumanoidRootPart")
-    if humanoidRootPart then
-        local raycastParams = RaycastParams.new()
-        raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
-        raycastParams.FilterDescendantsInstances = {murderer.Character}
-        
-        local rayOrigin = humanoidRootPart.Position
-        local rayDirection = Vector3.new(0, -5, 0)
-        local rayResult = workspace:Raycast(rayOrigin, rayDirection, raycastParams)
-        
-        if rayResult then
-            -- Target is on ground, adjust aim
-            local groundDistance = (rayOrigin.Y - rayResult.Position.Y)
-            if groundDistance < 1.5 then
-                -- Standing on ground, normal aim
-                predicted = predicted + Vector3.new(0, 0.8, 0)
-            end
-        else
-            -- Target is in air (jumping or falling)
-            predicted = predicted + Vector3.new(0, 1.5, 0)
-        end
+        predicted = predicted + (velocity * 0.05 * 1.2)
     end
 
-    -- Fire the shot
+    -- Fire
     local args = {
         CFrame.new(myHRP.Position, predicted),
         CFrame.new(predicted)
@@ -348,15 +304,23 @@ local function ShootMurderer()
     shootRemote:FireServer(unpack(args))
 end
 
--- Function to create the mobile GUI (persistent)
-local function CreateMobileGUI()
-    if mobileGUI then
-        mobileGUI:Destroy()
-        mobileGUI = nil
+-- ===== AUTO-SHOOT =====
+local function AutoShootLoop()
+    if not autoShoot then return end
+    
+    local murderer = GetMurderer()
+    if murderer then
+        ShootMurderer()
+        task.wait(math.random(100, 300) / 1000)
     end
+end
+
+-- ===== MOBILE GUI =====
+local function CreateMobileGUI()
+    if mobileGUI then mobileGUI:Destroy() end
     
     mobileGUI = Instance.new("ScreenGui")
-    mobileGUI.Name = "MurderMysteryMobileGUI"
+    mobileGUI.Name = "MM2MobileGUI"
     mobileGUI.ResetOnSpawn = false
     mobileGUI.IgnoreGuiInset = true
     mobileGUI.Parent = LocalPlayer.PlayerGui
@@ -376,7 +340,6 @@ local function CreateMobileGUI()
     
     local buttonLabel = Instance.new("TextLabel")
     buttonLabel.Size = UDim2.new(1, 0, 1, 0)
-    buttonLabel.Position = UDim2.new(0, 0, 0, 0)
     buttonLabel.BackgroundTransparency = 1
     buttonLabel.Text = "🔫"
     buttonLabel.TextSize = 50
@@ -386,42 +349,20 @@ local function CreateMobileGUI()
     
     local button = Instance.new("ImageButton")
     button.Size = UDim2.new(1, 0, 1, 0)
-    button.Position = UDim2.new(0, 0, 0, 0)
     button.BackgroundTransparency = 1
     button.Parent = buttonFrame
     
-    button.MouseEnter:Connect(function()
-        if buttonFrame then
-            buttonFrame.BackgroundTransparency = 0.2
-        end
-    end)
-    
-    button.MouseLeave:Connect(function()
-        if buttonFrame then
-            buttonFrame.BackgroundTransparency = 0.3
-        end
-    end)
-    
-    button.MouseButton1Down:Connect(function()
-        if buttonFrame then
-            buttonFrame.Size = UDim2.new(0, 110, 0, 110)
-        end
-    end)
-    
-    button.MouseButton1Up:Connect(function()
-        if buttonFrame then
-            buttonFrame.Size = UDim2.new(0, 120, 0, 120)
-        end
-    end)
-    
     button.MouseButton1Click:Connect(function()
-        ShootMurderer()
+        if autoShoot then
+            print("Auto-shoot is on! Toggle it off for manual shooting.")
+        else
+            ShootMurderer()
+        end
     end)
     
-    -- Draggable functionality
+    -- Draggable
     local dragging = false
-    local dragStart = nil
-    local startPos = nil
+    local dragStart, startPos
     
     button.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.Touch then
@@ -451,40 +392,87 @@ local function CreateMobileGUI()
     end)
 end
 
--- RAYFIELD UI BUTTONS
+-- ===== RAYFIELD UI =====
 
--- ESP Toggle Button
-Tab:CreateToggle({
-    Name = "ESP (Murderer: Red | Sheriff: Blue | Innocent: Green)",
+-- Main Tab
+MainTab:CreateToggle({
+    Name = "Glow ESP (Murderer: Red | Sheriff: Blue | Innocent: Green)",
     CurrentValue = false,
     Callback = function(Value)
         ToggleESP()
     end
 })
 
--- Shoot Button (Keyboard)
-Tab:CreateKeybind({
-    Name = "Shoot Murderer (Keyboard)",
-    CurrentKeybind = "Q",
-    HoldToInteract = false,
-    Callback = function()
-        ShootMurderer()
+MainTab:CreateToggle({
+    Name = "Auto-Shoot",
+    CurrentValue = false,
+    Callback = function(Value)
+        autoShoot = Value
+        if Value then
+            print("Auto-shoot enabled! Will shoot when murderer is in sight.")
+            spawn(function()
+                while autoShoot do
+                    AutoShootLoop()
+                    task.wait(0.05)
+                end
+            end)
+        else
+            print("Auto-shoot disabled")
+        end
     end
 })
 
--- Mobile GUI Creation (only on mobile)
+MainTab:CreateKeybind({
+    Name = "Manual Shoot (Keyboard)",
+    CurrentKeybind = "Q",
+    HoldToInteract = false,
+    Callback = function()
+        if not autoShoot then
+            ShootMurderer()
+        end
+    end
+})
+
+-- Settings Tab
+SettingsTab:CreateSlider({
+    Name = "Prediction Time",
+    Range = {0.1, 0.5},
+    Increment = 0.01,
+    Suffix = "s",
+    CurrentValue = 0.22,
+    Callback = function(Value)
+        prediction = Value
+    end
+})
+
+SettingsTab:CreateSlider({
+    Name = "FOV Radius (Auto-Shoot)",
+    Range = {50, 500},
+    Increment = 10,
+    Suffix = "px",
+    CurrentValue = 200,
+    Callback = function(Value)
+        fovRadius = Value
+    end
+})
+
+SettingsTab:CreateSlider({
+    Name = "Vertical Offset",
+    Range = {0.5, 3.0},
+    Increment = 0.1,
+    Suffix = "studs",
+    CurrentValue = 1.2,
+    Callback = function(Value)
+        verticalOffset = Value
+    end
+})
+
+-- ===== INITIALIZATION =====
 if isMobile then
     CreateMobileGUI()
-    
-    LocalPlayer.PlayerGui.ChildRemoved:Connect(function(child)
-        if child.Name == "MurderMysteryMobileGUI" and isMobile then
-            task.wait(0.1)
-            CreateMobileGUI()
-        end
-    end)
-    
-    print("Mobile mode detected! Improved aim for jumping players enabled.")
+    print("Mobile mode detected! Button will stay between rounds.")
 end
 
-print("Script loaded! ESP: Murderer=Red, Sheriff=Blue, Innocent=Green")
-print("Aim improved: Better prediction for jumping and running targets!")
+print("Script Loaded! Glow ESP + Auto-Shoot + Settings Saved!")
+print("🔴 Murderer | 🔵 Sheriff | 🟢 Innocent")
+print("Settings will auto-save when you change them!")
