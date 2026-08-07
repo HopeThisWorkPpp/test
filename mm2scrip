@@ -57,7 +57,168 @@ local flingKey = "F"
 
 -- ===== FUNCTIONS =====
 
-local function GetPlayerRole(player)
+-- ===== UNIFIED PREDICTION & TARGETING SYSTEM =====
+local function PredictTargetPosition(targetChar, predictionTime)
+    -- One shared prediction function for all attack types
+    if not targetChar or not targetChar:FindFirstChild("HumanoidRootPart") then
+        return nil
+    end
+    
+    local targetRoot = targetChar.HumanoidRootPart
+    local currentPos = targetRoot.Position
+    local currentVelocity = targetRoot.AssemblyLinearVelocity
+    
+    -- Predict where they'll be after predictionTime seconds
+    local predictedPos = currentPos + (currentVelocity * predictionTime)
+    
+    -- Add vertical offset (gravity compensation / aiming adjustment)
+    predictedPos = predictedPos + Vector3.new(0, verticalOffset, 0)
+    
+    return predictedPos
+end
+
+local function GetValidTargets(myRole)
+    -- Returns a list of valid targets based on player's role
+    local validTargets = {}
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if player == LocalPlayer or not player.Character then continue end
+        
+        local targetRole = GetPlayerRole(player)
+        local isValidTarget = false
+        
+        -- Role-based targeting logic (accurate to MM2 mechanics)
+        if myRole == "Murderer" then
+            -- Murderer attacks ANYONE ELSE (innocent or sheriff)
+            isValidTarget = (targetRole == "Innocent" or targetRole == "Sheriff")
+        elseif myRole == "Sheriff" then
+            -- Sheriff ONLY attacks the murderer
+            isValidTarget = (targetRole == "Murderer")
+        elseif myRole == "Innocent" then
+            -- Innocents have NO WEAPON - cannot attack
+            isValidTarget = false
+        end
+        
+        if isValidTarget and player.Character:FindFirstChild("HumanoidRootPart") then
+            table.insert(validTargets, player)
+        end
+    end
+    
+    return validTargets
+end
+
+local function GetClosestTarget(targets)
+    -- Find the closest valid target
+    if not targets or #targets == 0 then return nil end
+    
+    local closestPlayer = nil
+    local closestDistance = math.huge
+    
+    for _, player in pairs(targets) do
+        if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then continue end
+        
+        local distance = (player.Character.HumanoidRootPart.Position - LocalPlayer.Character.HumanoidRootPart.Position).Magnitude
+        
+        if distance < closestDistance then
+            closestDistance = distance
+            closestPlayer = player
+        end
+    end
+    
+    return closestPlayer
+end
+
+local function FireAtTarget(target, myRole)
+    -- Unified attack function: branches only on Murderer vs Sheriff
+    if not target or not target.Character then return end
+    
+    -- Innocents cannot attack (no weapon)
+    if myRole == "Innocent" then
+        return
+    end
+    
+    local predictedPos = PredictTargetPosition(target.Character, prediction)
+    
+    if not predictedPos then return end
+    
+    -- Branch point: WHAT to fire (based on role/weapon availability)
+    if myRole == "Murderer" then
+        -- Murderer has knife: throw it at innocents/sheriff
+        local knifeRemote = game.ReplicatedStorage:FindFirstChild("Knife") or
+                           game.ServerScriptService:FindFirstChild("Knife")
+        
+        if knifeRemote then
+            pcall(function()
+                knifeRemote:FireServer(target, predictedPos)
+            end)
+        end
+        
+    elseif myRole == "Sheriff" then
+        -- Sheriff has gun: shoot ONLY at murderer
+        local gunRemote = game.ReplicatedStorage:FindFirstChild("Shoot") or
+                         game.ServerScriptService:FindFirstChild("Shoot")
+        
+        if gunRemote then
+            pcall(function()
+                gunRemote:FireServer(target, predictedPos)
+            end)
+        end
+    end
+end
+
+local function ShootMurderer()
+    -- Clean entry point: get role, find targets, predict, and fire
+    if not LocalPlayer.Character then return end
+    
+    local myRole = GetPlayerRole(LocalPlayer)
+    
+    -- Innocents can't attack
+    if myRole == "Innocent" then
+        print("❌ You're an Innocent - run and hide! (No weapon)")
+        return
+    end
+    
+    local validTargets = GetValidTargets(myRole)
+    local closestTarget = GetClosestTarget(validTargets)
+    
+    if closestTarget then
+        FireAtTarget(closestTarget, myRole)
+        print("🎯 Fired at " .. closestTarget.Name .. " (Role: " .. GetPlayerRole(closestTarget) .. ")")
+    else
+        print("❌ No valid targets found")
+    end
+end
+
+local function AutoShootLoop()
+    if not LocalPlayer.Character then return end
+    
+    local myRole = GetPlayerRole(LocalPlayer)
+    
+    -- Innocents can't participate in auto-shoot
+    if myRole == "Innocent" then return end
+    
+    local validTargets = GetValidTargets(myRole)
+    
+    if #validTargets == 0 then return end
+    
+    local closestTarget = GetClosestTarget(validTargets)
+    if closestTarget then
+        local screenPos = Camera:WorldToScreenPoint(closestTarget.Character.HumanoidRootPart.Position)
+        
+        -- Simple FOV check: is the target within FOV radius of screen center?
+        local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+        local screenDist = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
+        
+        if screenDist < fovRadius then
+            FireAtTarget(closestTarget, myRole)
+            task.wait(math.random(150, 350) / 1000)
+        end
+    end
+end
+
+-- ===== END UNIFIED PREDICTION SYSTEM =====
+
+
     if not player or not player.Character then return "Unknown" end
     
     if player.Backpack:FindFirstChild("Knife") or (player.Character and player.Character:FindFirstChild("Knife")) then
