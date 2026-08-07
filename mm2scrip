@@ -57,168 +57,7 @@ local flingKey = "F"
 
 -- ===== FUNCTIONS =====
 
--- ===== UNIFIED PREDICTION & TARGETING SYSTEM =====
-local function PredictTargetPosition(targetChar, predictionTime)
-    -- One shared prediction function for all attack types
-    if not targetChar or not targetChar:FindFirstChild("HumanoidRootPart") then
-        return nil
-    end
-    
-    local targetRoot = targetChar.HumanoidRootPart
-    local currentPos = targetRoot.Position
-    local currentVelocity = targetRoot.AssemblyLinearVelocity
-    
-    -- Predict where they'll be after predictionTime seconds
-    local predictedPos = currentPos + (currentVelocity * predictionTime)
-    
-    -- Add vertical offset (gravity compensation / aiming adjustment)
-    predictedPos = predictedPos + Vector3.new(0, verticalOffset, 0)
-    
-    return predictedPos
-end
-
-local function GetValidTargets(myRole)
-    -- Returns a list of valid targets based on player's role
-    local validTargets = {}
-    
-    for _, player in pairs(Players:GetPlayers()) do
-        if player == LocalPlayer or not player.Character then continue end
-        
-        local targetRole = GetPlayerRole(player)
-        local isValidTarget = false
-        
-        -- Role-based targeting logic (accurate to MM2 mechanics)
-        if myRole == "Murderer" then
-            -- Murderer attacks ANYONE ELSE (innocent or sheriff)
-            isValidTarget = (targetRole == "Innocent" or targetRole == "Sheriff")
-        elseif myRole == "Sheriff" then
-            -- Sheriff ONLY attacks the murderer
-            isValidTarget = (targetRole == "Murderer")
-        elseif myRole == "Innocent" then
-            -- Innocents have NO WEAPON - cannot attack
-            isValidTarget = false
-        end
-        
-        if isValidTarget and player.Character:FindFirstChild("HumanoidRootPart") then
-            table.insert(validTargets, player)
-        end
-    end
-    
-    return validTargets
-end
-
-local function GetClosestTarget(targets)
-    -- Find the closest valid target
-    if not targets or #targets == 0 then return nil end
-    
-    local closestPlayer = nil
-    local closestDistance = math.huge
-    
-    for _, player in pairs(targets) do
-        if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then continue end
-        
-        local distance = (player.Character.HumanoidRootPart.Position - LocalPlayer.Character.HumanoidRootPart.Position).Magnitude
-        
-        if distance < closestDistance then
-            closestDistance = distance
-            closestPlayer = player
-        end
-    end
-    
-    return closestPlayer
-end
-
-local function FireAtTarget(target, myRole)
-    -- Unified attack function: branches only on Murderer vs Sheriff
-    if not target or not target.Character then return end
-    
-    -- Innocents cannot attack (no weapon)
-    if myRole == "Innocent" then
-        return
-    end
-    
-    local predictedPos = PredictTargetPosition(target.Character, prediction)
-    
-    if not predictedPos then return end
-    
-    -- Branch point: WHAT to fire (based on role/weapon availability)
-    if myRole == "Murderer" then
-        -- Murderer has knife: throw it at innocents/sheriff
-        local knifeRemote = game.ReplicatedStorage:FindFirstChild("Knife") or
-                           game.ServerScriptService:FindFirstChild("Knife")
-        
-        if knifeRemote then
-            pcall(function()
-                knifeRemote:FireServer(target, predictedPos)
-            end)
-        end
-        
-    elseif myRole == "Sheriff" then
-        -- Sheriff has gun: shoot ONLY at murderer
-        local gunRemote = game.ReplicatedStorage:FindFirstChild("Shoot") or
-                         game.ServerScriptService:FindFirstChild("Shoot")
-        
-        if gunRemote then
-            pcall(function()
-                gunRemote:FireServer(target, predictedPos)
-            end)
-        end
-    end
-end
-
-local function ShootMurderer()
-    -- Clean entry point: get role, find targets, predict, and fire
-    if not LocalPlayer.Character then return end
-    
-    local myRole = GetPlayerRole(LocalPlayer)
-    
-    -- Innocents can't attack
-    if myRole == "Innocent" then
-        print("❌ You're an Innocent - run and hide! (No weapon)")
-        return
-    end
-    
-    local validTargets = GetValidTargets(myRole)
-    local closestTarget = GetClosestTarget(validTargets)
-    
-    if closestTarget then
-        FireAtTarget(closestTarget, myRole)
-        print("🎯 Fired at " .. closestTarget.Name .. " (Role: " .. GetPlayerRole(closestTarget) .. ")")
-    else
-        print("❌ No valid targets found")
-    end
-end
-
-local function AutoShootLoop()
-    if not LocalPlayer.Character then return end
-    
-    local myRole = GetPlayerRole(LocalPlayer)
-    
-    -- Innocents can't participate in auto-shoot
-    if myRole == "Innocent" then return end
-    
-    local validTargets = GetValidTargets(myRole)
-    
-    if #validTargets == 0 then return end
-    
-    local closestTarget = GetClosestTarget(validTargets)
-    if closestTarget then
-        local screenPos = Camera:WorldToScreenPoint(closestTarget.Character.HumanoidRootPart.Position)
-        
-        -- Simple FOV check: is the target within FOV radius of screen center?
-        local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-        local screenDist = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
-        
-        if screenDist < fovRadius then
-            FireAtTarget(closestTarget, myRole)
-            task.wait(math.random(150, 350) / 1000)
-        end
-    end
-end
-
--- ===== END UNIFIED PREDICTION SYSTEM =====
-
-
+local function GetPlayerRole(player)
     if not player or not player.Character then return "Unknown" end
     
     if player.Backpack:FindFirstChild("Knife") or (player.Character and player.Character:FindFirstChild("Knife")) then
@@ -884,8 +723,80 @@ local function EquipGun()
     return LocalPlayer.Character:FindFirstChild("Gun")
 end
 
+local function EquipKnife()
+    local knife = LocalPlayer.Backpack:FindFirstChild("Knife")
+    if knife then
+        LocalPlayer.Character.Humanoid:EquipTool(knife)
+        return knife
+    end
+    return LocalPlayer.Character:FindFirstChild("Knife")
+end
+
+-- Which weapon you're holding tells you your role. MM2 doesn't hand you a
+-- "Role" value directly — the tool in your Backpack/Character IS the role.
+local function GetMyRole()
+    if not LocalPlayer.Character then return "Unknown" end
+    if LocalPlayer.Character:FindFirstChild("Knife") or LocalPlayer.Backpack:FindFirstChild("Knife") then
+        return "Murderer"
+    end
+    if LocalPlayer.Character:FindFirstChild("Gun") or LocalPlayer.Backpack:FindFirstChild("Gun") then
+        return "Sheriff"
+    end
+    return "Innocent"
+end
+
+-- As murderer there's no single fixed target like the sheriff has (the
+-- murderer) — anyone else is fair game, so just go for whoever's closest.
+local function GetNearestPlayer()
+    local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not myHRP then return nil end
+
+    local nearest, nearestDist = nil, math.huge
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local dist = (hrp.Position - myHRP.Position).Magnitude
+                if dist < nearestDist then
+                    nearest = player
+                    nearestDist = dist
+                end
+            end
+        end
+    end
+    return nearest
+end
+
 -- Smoothed velocity buffer (reduces jitter from jump-spam / touch input lag on mobile)
 local smoothedTargetVelocity = Vector3.new(0, 0, 0)
+
+-- Shared prediction math for both gun shots and knife throws. Horizontal is
+-- linear (roughly constant velocity over the prediction window). Vertical
+-- only gets the gravity/kinematic correction while the target is actually
+-- airborne — applying it while grounded was dragging shots into the floor.
+local function PredictTargetPosition(targetHRP, targetHumanoid)
+    local rawVelocity = targetHRP.AssemblyLinearVelocity
+    smoothedTargetVelocity = smoothedTargetVelocity:Lerp(rawVelocity, 0.6)
+
+    local predictedX = targetHRP.Position.X + (smoothedTargetVelocity.X * prediction)
+    local predictedZ = targetHRP.Position.Z + (smoothedTargetVelocity.Z * prediction)
+
+    local gravity = workspace.Gravity
+    local state = targetHumanoid and targetHumanoid:GetState()
+    local isAirborne = state == Enum.HumanoidStateType.Jumping
+        or state == Enum.HumanoidStateType.Freefall
+
+    local predictedY
+    if isAirborne then
+        predictedY = targetHRP.Position.Y
+            + (smoothedTargetVelocity.Y * prediction)
+            - (0.5 * gravity * prediction ^ 2)
+    else
+        predictedY = targetHRP.Position.Y
+    end
+
+    return Vector3.new(predictedX, predictedY, predictedZ) + Vector3.new(0, verticalOffset, 0)
+end
 
 local function ShootMurderer()
     local murderer = GetMurderer()
@@ -902,36 +813,8 @@ local function ShootMurderer()
     local shootRemote = gun:FindFirstChild("Shoot")
     if not shootRemote then return end
 
-    local rawVelocity = targetHRP.AssemblyLinearVelocity
-    -- Smooth out single-frame spikes (e.g. the instant a jump input registers)
-    smoothedTargetVelocity = smoothedTargetVelocity:Lerp(rawVelocity, 0.6)
-
-    -- Horizontal velocity is roughly constant over the prediction window, so
-    -- linear extrapolation is fine on X/Z.
-    local predictedX = targetHRP.Position.X + (smoothedTargetVelocity.X * prediction)
-    local predictedZ = targetHRP.Position.Z + (smoothedTargetVelocity.Z * prediction)
-
-    -- Vertical velocity is only non-linear (gravity actively acting on it)
-    -- while the target is airborne. On the ground, Y barely changes, so
-    -- applying the gravity term unconditionally was dragging every shot
-    -- ~3+ studs into the floor even when they weren't jumping.
-    local gravity = workspace.Gravity
     local targetHumanoid = murderer.Character:FindFirstChild("Humanoid")
-    local state = targetHumanoid and targetHumanoid:GetState()
-    local isAirborne = state == Enum.HumanoidStateType.Jumping
-        or state == Enum.HumanoidStateType.Freefall
-
-    local predictedY
-    if isAirborne then
-        predictedY = targetHRP.Position.Y
-            + (smoothedTargetVelocity.Y * prediction)
-            - (0.5 * gravity * prediction ^ 2)
-    else
-        predictedY = targetHRP.Position.Y
-    end
-
-    local predicted = Vector3.new(predictedX, predictedY, predictedZ)
-    predicted = predicted + Vector3.new(0, verticalOffset, 0)
+    local predicted = PredictTargetPosition(targetHRP, targetHumanoid)
 
     local args = {
         CFrame.new(myHRP.Position, predicted),
@@ -940,22 +823,75 @@ local function ShootMurderer()
     shootRemote:FireServer(unpack(args))
 end
 
+local function ThrowKnife()
+    local target = GetNearestPlayer()
+    if not target or not target.Character then return end
+
+    local targetHRP = target.Character:FindFirstChild("HumanoidRootPart")
+    local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not targetHRP or not myHRP then return end
+
+    local knife = EquipKnife()
+    if not knife then return end
+
+    -- NOTE: "Shoot" was confirmed correct for the gun by testing in-game.
+    -- The knife's throw remote may have a different name — check the
+    -- Knife tool's children in Explorer while holding it and adjust the
+    -- FindFirstChild list below if this doesn't fire anything.
+    local throwRemote = knife:FindFirstChild("Throw")
+        or knife:FindFirstChild("ThrowKnife")
+        or knife:FindFirstChild("Remote")
+    if not throwRemote then
+        warn("⚠️ Knife throw remote not found — check Knife's children in Explorer and update ThrowKnife()")
+        return
+    end
+
+    local targetHumanoid = target.Character:FindFirstChild("Humanoid")
+    local predicted = PredictTargetPosition(targetHRP, targetHumanoid)
+
+    local args = {
+        CFrame.new(myHRP.Position, predicted),
+        CFrame.new(predicted)
+    }
+    throwRemote:FireServer(unpack(args))
+end
+
+-- Single entry point the UI calls — picks shoot vs throw based on which
+-- weapon you're actually holding, so every button/keybind stays the same.
+local function PerformAttack()
+    local role = GetMyRole()
+    if role == "Sheriff" then
+        ShootMurderer()
+    elseif role == "Murderer" then
+        ThrowKnife()
+    end
+end
+
 -- ===== AUTO-SHOOT =====
 local function AutoShootLoop()
     if not autoShoot then return end
-    
-    local murderer = GetMurderer()
-    if murderer then
-        local targetPos = murderer.Character:FindFirstChild("HumanoidRootPart")
-        if targetPos then
-            local screenPos, onScreen = Camera:WorldToViewportPoint(targetPos.Position)
-            if onScreen then
-                local distance = (Vector2.new(screenPos.X, screenPos.Y) - Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)).Magnitude
-                if distance < fovRadius then
-                    ShootMurderer()
-                    task.wait(math.random(150, 350) / 1000)
-                end
-            end
+
+    local role = GetMyRole()
+    local target, targetHRP
+
+    if role == "Sheriff" then
+        target = GetMurderer()
+    elseif role == "Murderer" then
+        target = GetNearestPlayer()
+    else
+        return
+    end
+
+    if not target or not target.Character then return end
+    targetHRP = target.Character:FindFirstChild("HumanoidRootPart")
+    if not targetHRP then return end
+
+    local screenPos, onScreen = Camera:WorldToViewportPoint(targetHRP.Position)
+    if onScreen then
+        local distance = (Vector2.new(screenPos.X, screenPos.Y) - Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)).Magnitude
+        if distance < fovRadius then
+            PerformAttack()
+            task.wait(math.random(150, 350) / 1000)
         end
     end
 end
@@ -1001,7 +937,7 @@ local function CreateMobileGUI()
         if autoShoot then
             print("Auto-shoot is on! Toggle off for manual.")
         else
-            ShootMurderer()
+            PerformAttack()
         end
     end)
     
@@ -1080,7 +1016,7 @@ MainTab:CreateKeybind({
     HoldToInteract = false,
     Callback = function()
         if not autoShoot then
-            ShootMurderer()
+            PerformAttack()
         end
     end
 })
