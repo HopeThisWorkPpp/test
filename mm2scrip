@@ -153,6 +153,24 @@ end
 -- ===== GUN ESP FUNCTIONS (COMPLETELY REWRITTEN) =====
 local RemoveGunESP -- forward declared: CreateGunESP calls this before it's defined below
 
+-- Tools don't have a .Position property — only their Handle (or any BasePart
+-- inside them) does. Reading tool.Position directly throws every frame,
+-- which was silently killing the ESP coroutine before anything ever drew.
+local function GetToolPosition(tool)
+    if not tool then return nil end
+    local handle = tool:FindFirstChild("Handle")
+    if handle and handle:IsA("BasePart") then
+        return handle.Position
+    end
+    -- Fallback: any BasePart directly inside the tool
+    for _, child in pairs(tool:GetChildren()) do
+        if child:IsA("BasePart") then
+            return child.Position
+        end
+    end
+    return nil
+end
+
 local function CreateGunESP(tool)
     if not tool then return end
     if tool.Name ~= "Gun" then return end
@@ -217,11 +235,15 @@ local function CreateGunESP(tool)
         espPart.CanCollide = false
         espPart.Anchored = true
         espPart.Parent = tool
+        espPart.Position = GetToolPosition(tool) or espPart.Position
         
         -- Keep the part at the tool's position
         spawn(function()
             while espPart and espPart.Parent and tool and tool.Parent do
-                espPart.Position = tool.Position
+                local pos = GetToolPosition(tool)
+                if pos then
+                    espPart.Position = pos
+                end
                 task.wait(0.1)
             end
         end)
@@ -312,8 +334,9 @@ local function CreateGunESP(tool)
                 
                 if distanceLabel and LocalPlayer.Character then
                     local myPos = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-                    if myPos and tool then
-                        local distance = (myPos.Position - tool.Position).Magnitude
+                    local toolPos = GetToolPosition(tool)
+                    if myPos and toolPos then
+                        local distance = (myPos.Position - toolPos).Magnitude
                         distanceLabel.Text = math.floor(distance) .. " studs"
                     end
                 end
