@@ -727,13 +727,24 @@ local function ShootMurderer()
     local predictedX = targetHRP.Position.X + (smoothedTargetVelocity.X * prediction)
     local predictedZ = targetHRP.Position.Z + (smoothedTargetVelocity.Z * prediction)
 
-    -- Vertical velocity is NOT constant while jumping — gravity is actively
-    -- decelerating/reversing it. Use kinematics (y = y0 + v*t - 0.5*g*t^2)
-    -- instead of linear extrapolation, or jump spam sends predictedY way off.
+    -- Vertical velocity is only non-linear (gravity actively acting on it)
+    -- while the target is airborne. On the ground, Y barely changes, so
+    -- applying the gravity term unconditionally was dragging every shot
+    -- ~3+ studs into the floor even when they weren't jumping.
     local gravity = workspace.Gravity
-    local predictedY = targetHRP.Position.Y
-        + (smoothedTargetVelocity.Y * prediction)
-        - (0.5 * gravity * prediction ^ 2)
+    local targetHumanoid = murderer.Character:FindFirstChild("Humanoid")
+    local state = targetHumanoid and targetHumanoid:GetState()
+    local isAirborne = state == Enum.HumanoidStateType.Jumping
+        or state == Enum.HumanoidStateType.Freefall
+
+    local predictedY
+    if isAirborne then
+        predictedY = targetHRP.Position.Y
+            + (smoothedTargetVelocity.Y * prediction)
+            - (0.5 * gravity * prediction ^ 2)
+    else
+        predictedY = targetHRP.Position.Y
+    end
 
     local predicted = Vector3.new(predictedX, predictedY, predictedZ)
     predicted = predicted + Vector3.new(0, verticalOffset, 0)
