@@ -151,6 +151,8 @@ local function RemoveGlowESP(player)
 end
 
 -- ===== GUN ESP FUNCTIONS (COMPLETELY REWRITTEN) =====
+local RemoveGunESP -- forward declared: CreateGunESP calls this before it's defined below
+
 local function CreateGunESP(tool)
     if not tool then return end
     if tool.Name ~= "Gun" then return end
@@ -324,7 +326,7 @@ local function CreateGunESP(tool)
     end
 end
 
-local function RemoveGunESP(tool)
+RemoveGunESP = function(tool)
     for i, esp in pairs(gunESPObjects) do
         if esp.Tool == tool then
             if esp.ESPPart then esp.ESPPart:Destroy() end
@@ -483,6 +485,35 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
         FlingMurderer()
     end
 end)
+
+-- ===== ANTI-FLING =====
+local antiFlingEnabled = false
+local maxSafeVelocity = 100 -- studs/s, above normal walk/jump/knockback range
+local antiFlingConnection = nil
+
+local function ToggleAntiFling()
+    antiFlingEnabled = not antiFlingEnabled
+
+    if antiFlingEnabled then
+        antiFlingConnection = RunService.Heartbeat:Connect(function()
+            local character = LocalPlayer.Character
+            if not character then return end
+            local hrp = character:FindFirstChild("HumanoidRootPart")
+            if not hrp then return end
+
+            local vel = hrp.AssemblyLinearVelocity
+            if vel.Magnitude > maxSafeVelocity then
+                -- Kill the excess velocity but keep some downward pull so you
+                -- don't look like you're floating/frozen mid-air.
+                hrp.AssemblyLinearVelocity = Vector3.new(0, math.max(vel.Y, -50), 0)
+            end
+        end)
+        print("🛡️ Anti-Fling Enabled")
+    else
+        if antiFlingConnection then antiFlingConnection:Disconnect() end
+        print("❌ Anti-Fling Disabled")
+    end
+end
 
 -- ===== TOGGLE FUNCTIONS =====
 local function ToggleESP()
@@ -945,6 +976,25 @@ FlingTab:CreateButton({
     Name = "Fling Murderer Now!",
     Callback = function()
         FlingMurderer()
+    end
+})
+
+FlingTab:CreateToggle({
+    Name = "Anti-Fling Protection",
+    CurrentValue = false,
+    Callback = function(Value)
+        ToggleAntiFling()
+    end
+})
+
+FlingTab:CreateSlider({
+    Name = "Max Safe Velocity",
+    Range = {50, 300},
+    Increment = 10,
+    Suffix = "studs/s",
+    CurrentValue = 100,
+    Callback = function(Value)
+        maxSafeVelocity = Value
     end
 })
 
