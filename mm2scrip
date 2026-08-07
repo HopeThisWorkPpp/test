@@ -669,6 +669,9 @@ local function EquipGun()
     return LocalPlayer.Character:FindFirstChild("Gun")
 end
 
+-- Smoothed velocity buffer (reduces jitter from jump-spam / touch input lag on mobile)
+local smoothedTargetVelocity = Vector3.new(0, 0, 0)
+
 local function ShootMurderer()
     local murderer = GetMurderer()
     if not murderer or not murderer.Character then return end
@@ -684,8 +687,24 @@ local function ShootMurderer()
     local shootRemote = gun:FindFirstChild("Shoot")
     if not shootRemote then return end
 
-    local velocity = targetHRP.AssemblyLinearVelocity
-    local predicted = targetHRP.Position + (velocity * prediction)
+    local rawVelocity = targetHRP.AssemblyLinearVelocity
+    -- Smooth out single-frame spikes (e.g. the instant a jump input registers)
+    smoothedTargetVelocity = smoothedTargetVelocity:Lerp(rawVelocity, 0.6)
+
+    -- Horizontal velocity is roughly constant over the prediction window, so
+    -- linear extrapolation is fine on X/Z.
+    local predictedX = targetHRP.Position.X + (smoothedTargetVelocity.X * prediction)
+    local predictedZ = targetHRP.Position.Z + (smoothedTargetVelocity.Z * prediction)
+
+    -- Vertical velocity is NOT constant while jumping — gravity is actively
+    -- decelerating/reversing it. Use kinematics (y = y0 + v*t - 0.5*g*t^2)
+    -- instead of linear extrapolation, or jump spam sends predictedY way off.
+    local gravity = workspace.Gravity
+    local predictedY = targetHRP.Position.Y
+        + (smoothedTargetVelocity.Y * prediction)
+        - (0.5 * gravity * prediction ^ 2)
+
+    local predicted = Vector3.new(predictedX, predictedY, predictedZ)
     predicted = predicted + Vector3.new(0, verticalOffset, 0)
 
     local args = {
