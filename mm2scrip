@@ -17,6 +17,7 @@ local FlingTab = Window:CreateTab("Fling")
 local SettingsTab = Window:CreateTab("Settings")
 
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
@@ -823,6 +824,39 @@ local function ShootMurderer()
     shootRemote:FireServer(unpack(args))
 end
 
+-- ===== DEBUG: FIND KNIFE THROW REMOTE =====
+-- The gun's remote ("Shoot") lives directly on the Gun tool, but MM2's
+-- knife throw very often routes through a shared remote in
+-- ReplicatedStorage instead. This dumps candidates to the console so we
+-- can point ThrowKnife() at the right one without guessing blind.
+local function DebugKnife()
+    local knife = EquipKnife()
+    if not knife then
+        warn("⚠️ No Knife found in Backpack or Character")
+        return
+    end
+
+    print("=== Knife tool children (ClassName: Name) ===")
+    for _, child in pairs(knife:GetChildren()) do
+        print(child.ClassName .. ": " .. child.Name)
+    end
+
+    print("=== ReplicatedStorage remotes matching 'knife' or 'throw' ===")
+    local found = false
+    for _, obj in pairs(ReplicatedStorage:GetDescendants()) do
+        if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
+            local lname = obj.Name:lower()
+            if lname:find("knife") or lname:find("throw") then
+                print(obj.ClassName .. ": " .. obj:GetFullName())
+                found = true
+            end
+        end
+    end
+    if not found then
+        print("(none found — the remote may be nested in a folder with a generic name, or fired via a different service)")
+    end
+end
+
 local function ThrowKnife()
     local target = GetNearestPlayer()
     if not target or not target.Character then return end
@@ -1007,6 +1041,13 @@ MainTab:CreateToggle({
         else
             print("❌ Auto-shoot disabled")
         end
+    end
+})
+
+MainTab:CreateButton({
+    Name = "Debug Knife Remote (check console)",
+    Callback = function()
+        DebugKnife()
     end
 })
 
