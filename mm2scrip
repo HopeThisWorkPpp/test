@@ -841,6 +841,16 @@ local function DebugKnife()
         print(child.ClassName .. ": " .. child.Name)
     end
 
+    -- Check inside any subfolder (e.g. "Events") since MM2 tools often
+    -- organize their remotes there instead of leaving them loose on the tool.
+    local eventsFolder = knife:FindFirstChild("Events")
+    if eventsFolder then
+        print("=== Contents of Knife.Events ===")
+        for _, child in pairs(eventsFolder:GetChildren()) do
+            print(child.ClassName .. ": " .. child.Name)
+        end
+    end
+
     print("=== ReplicatedStorage remotes matching 'knife' or 'throw' ===")
     local found = false
     for _, obj in pairs(ReplicatedStorage:GetDescendants()) do
