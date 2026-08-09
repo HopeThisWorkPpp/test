@@ -18,6 +18,7 @@ local SettingsTab = Window:CreateTab("Settings")
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local StatsService = game:GetService("Stats")
 local LocalPlayer = Players.LocalPlayer
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
@@ -771,6 +772,20 @@ end
 -- Smoothed velocity buffer (reduces jitter from jump-spam / touch input lag on mobile)
 local smoothedTargetVelocity = Vector3.new(0, 0, 0)
 
+-- Live ping in seconds (round trip). Mobile connections fluctuate a lot, so
+-- a fixed prediction time undershoots when latency spikes and overshoots
+-- when it's low. This gets added on top of the base "Prediction Time"
+-- slider to compensate for whatever your connection is doing right now.
+local function GetPingSeconds()
+    local ok, ms = pcall(function()
+        return StatsService.Network.ServerStatsItem["Data Ping"]:GetValue()
+    end)
+    if ok and ms then
+        return ms / 1000
+    end
+    return 0
+end
+
 -- Shared prediction math for both gun shots and knife throws. Horizontal is
 -- linear (roughly constant velocity over the prediction window). Vertical
 -- only gets the gravity/kinematic correction while the target is actually
@@ -779,8 +794,17 @@ local function PredictTargetPosition(targetHRP, targetHumanoid)
     local rawVelocity = targetHRP.AssemblyLinearVelocity
     smoothedTargetVelocity = smoothedTargetVelocity:Lerp(rawVelocity, 0.6)
 
-    local predictedX = targetHRP.Position.X + (smoothedTargetVelocity.X * prediction)
-    local predictedZ = targetHRP.Position.Z + (smoothedTargetVelocity.Z * prediction)
+    -- Only compensate for how far CURRENT ping deviates from a typical
+    -- baseline (~100ms one-way) — that baseline is already baked into your
+    -- tuned 0.185s default, so this only kicks in during lag spikes/dips
+    -- instead of shifting normal-condition shots that were already working.
+    local assumedBaselinePing = 0.1
+    local currentOneWayPing = GetPingSeconds() * 0.5
+    local pingCompensation = math.clamp(currentOneWayPing - assumedBaselinePing, -0.05, 0.15)
+    local effectivePrediction = prediction + pingCompensation
+
+    local predictedX = targetHRP.Position.X + (smoothedTargetVelocity.X * effectivePrediction)
+    local predictedZ = targetHRP.Position.Z + (smoothedTargetVelocity.Z * effectivePrediction)
 
     local gravity = workspace.Gravity
     local state = targetHumanoid and targetHumanoid:GetState()
@@ -790,8 +814,8 @@ local function PredictTargetPosition(targetHRP, targetHumanoid)
     local predictedY
     if isAirborne then
         predictedY = targetHRP.Position.Y
-            + (smoothedTargetVelocity.Y * prediction)
-            - (0.5 * gravity * prediction ^ 2)
+            + (smoothedTargetVelocity.Y * effectivePrediction)
+            - (0.5 * gravity * effectivePrediction ^ 2)
     else
         predictedY = targetHRP.Position.Y
     end
