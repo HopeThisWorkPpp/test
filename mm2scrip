@@ -878,18 +878,21 @@ local function ThrowKnife()
     local knife = EquipKnife()
     if not knife then return end
 
-    -- NOTE: "Shoot" was confirmed correct for the gun by testing in-game.
-    -- The knife's throw remote may have a different name — check the
-    -- Knife tool's children in Explorer while holding it and adjust the
-    -- FindFirstChild list below if this doesn't fire anything.
-    local throwRemote = knife:FindFirstChild("Throw")
-        or knife:FindFirstChild("ThrowKnife")
-        or knife:FindFirstChild("Remote")
+    -- Confirmed via in-game Explorer dump: lives at Knife.Events.KnifeThrown
+    -- (siblings KnifeStabbed and HandleTouched are for the melee stab, not
+    -- the throw — don't use those here).
+    local eventsFolder = knife:FindFirstChild("Events")
+    local throwRemote = eventsFolder and eventsFolder:FindFirstChild("KnifeThrown")
     if not throwRemote then
-        warn("⚠️ Knife throw remote not found — check Knife's children in Explorer and update ThrowKnife()")
+        warn("⚠️ Knife.Events.KnifeThrown not found — knife structure may have changed, rerun Debug Knife Remote")
         return
     end
 
+    -- Argument signature is unverified — using the same pattern that worked
+    -- for the gun's "Shoot" remote (origin CFrame, target CFrame) as a
+    -- starting guess. If nothing happens or you get a Roblox Console error
+    -- when this fires, check the error/warning text and tell me — it'll
+    -- usually say exactly what type/count of args KnifeThrown expects.
     local targetHumanoid = target.Character:FindFirstChild("Humanoid")
     local predicted = PredictTargetPosition(targetHRP, targetHumanoid)
 
