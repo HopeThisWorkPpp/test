@@ -515,22 +515,61 @@ end)
 local antiFlingEnabled = false
 local maxSafeVelocity = 100 -- studs/s, above normal walk/jump/knockback range
 local antiFlingConnection = nil
+local lastSafePosition = nil
+local lastSafeTime = 0
 
 local function ToggleAntiFling()
     antiFlingEnabled = not antiFlingEnabled
 
     if antiFlingEnabled then
+        lastSafePosition = nil
+        lastSafeTime = tick()
+
         antiFlingConnection = RunService.Heartbeat:Connect(function()
             local character = LocalPlayer.Character
             if not character then return end
             local hrp = character:FindFirstChild("HumanoidRootPart")
             if not hrp then return end
 
+            -- Force network ownership of your own character back to
+            -- yourself every frame. Most flings work by momentarily gaining
+            -- ownership of your HRP (often via a physics collision) and
+            -- setting velocity on it while they own it — if another client
+            -- never holds ownership, they can't move your part at all. The
+            -- velocity clamp below is just a backup for the single frame
+            -- before ownership fully re-settles.
+            pcall(function()
+                hrp:SetNetworkOwner(LocalPlayer)
+            end)
+
             local vel = hrp.AssemblyLinearVelocity
             if vel.Magnitude > maxSafeVelocity then
                 -- Kill the excess velocity but keep some downward pull so you
                 -- don't look like you're floating/frozen mid-air.
                 hrp.AssemblyLinearVelocity = Vector3.new(0, math.max(vel.Y, -50), 0)
+            end
+
+            -- Safety net: this catches flings regardless of *how* they
+            -- happen (velocity, ownership theft, or even a server-side
+            -- remote we can't otherwise touch). Remember the last position
+            -- you were at while moving normally; if you ever show up far
+            -- from that spot in an impossibly short window, snap back
+            -- instead of riding it into a kill zone or the void. Skips the
+            -- check while your own Super Speed is on so it doesn't fight
+            -- your legit fast movement.
+            if not speedEnabled then
+                if vel.Magnitude < maxSafeVelocity then
+                    lastSafePosition = hrp.Position
+                    lastSafeTime = tick()
+                elseif lastSafePosition then
+                    local distFromSafe = (hrp.Position - lastSafePosition).Magnitude
+                    local elapsed = tick() - lastSafeTime
+                    if distFromSafe > 150 and elapsed < 1 then
+                        hrp.CFrame = CFrame.new(lastSafePosition)
+                        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                        print("🛡️ Anti-Fling: rescued back to last safe position")
+                    end
+                end
             end
         end)
         print("🛡️ Anti-Fling Enabled")
