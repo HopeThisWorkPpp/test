@@ -516,43 +516,31 @@ local antiFlingEnabled = false
 local maxSafeVelocity = 100 -- studs/s, above normal walk/jump/knockback range
 local severeVelocityThreshold = 250 -- past this, snap back immediately regardless of distance
 local maxSafeAngularVelocity = 50 -- spin-based flings show up here even when linear velocity looks tame
+local collisionRecoveryDelay = 0.3 -- seconds to keep collision off after the last detected spike
 local antiFlingConnection = nil
-local antiFlingCharacterConnection = nil
 local lastSafePosition = nil
 local lastSafeTime = 0
-local originalCollide = {} -- so we can restore real CanCollide values on toggle-off
 local ZERO_PHYSICS_OK, ZERO_PHYSICS = pcall(function()
     return PhysicalProperties.new(0.01, 0, 0, 0, 0)
 end)
 
--- Ground detection on modern Roblox uses the Humanoid's own sensor system,
--- not physical part collision, so setting CanCollide = false on your whole
--- character is safe — you won't fall through the floor, but other players'
--- physics can no longer shove/collide into you at all, which is the root
--- cause of a lot of flings (not just a symptom of it).
-local function DisableCharacterCollision(character)
-    for _, part in pairs(character:GetDescendants()) do
-        if part:IsA("BasePart") then
-            originalCollide[part] = part.CanCollide
-            part.CanCollide = false
-        end
-    end
-end
+-- Parts we've temporarily disabled collision on, mapped to when it's safe
+-- to turn collision back on. Collision stays NORMAL during regular play —
+-- it's only switched off for the brief moment a fling spike is happening,
+-- then restored automatically once things are calm again. This avoids the
+-- "walk through everyone" side effect of leaving it off permanently.
+local collisionRecovery = {}
 
-local function RestoreCharacterCollision()
-    for part, wasCollidable in pairs(originalCollide) do
-        if part and part.Parent then
-            part.CanCollide = wasCollidable
-        end
-    end
-    originalCollide = {}
-end
-
--- Kill both linear and angular velocity on a part, disable its collision,
--- and (best-effort) zero its physical properties so it can't transfer much
--- force even on incidental contact this frame.
-local function NeutralizePart(part)
+local function DisablePartCollisionTemporarily(part)
     part.CanCollide = false
+    collisionRecovery[part] = tick() + collisionRecoveryDelay
+end
+
+-- Kill both linear and angular velocity on a part, disable its collision
+-- for a moment, and (best-effort) zero its physical properties so it can't
+-- transfer much force even on incidental contact this frame.
+local function NeutralizePart(part)
+    DisablePartCollisionTemporarily(part)
     part.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
     part.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
     if ZERO_PHYSICS_OK then
@@ -562,26 +550,29 @@ local function NeutralizePart(part)
     end
 end
 
+local function RestoreSettledCollisions()
+    local now = tick()
+    for part, restoreAt in pairs(collisionRecovery) do
+        if not part or not part.Parent then
+            collisionRecovery[part] = nil
+        elseif now >= restoreAt then
+            part.CanCollide = true
+            collisionRecovery[part] = nil
+        end
+    end
+end
+
 local function ToggleAntiFling()
     antiFlingEnabled = not antiFlingEnabled
 
     if antiFlingEnabled then
         lastSafePosition = nil
         lastSafeTime = tick()
-
-        if LocalPlayer.Character then
-            DisableCharacterCollision(LocalPlayer.Character)
-        end
-
-        -- Character parts reset to default CanCollide on every respawn, so
-        -- reapply whenever a new character loads in while this is still on.
-        antiFlingCharacterConnection = LocalPlayer.CharacterAdded:Connect(function(newCharacter)
-            if not antiFlingEnabled then return end
-            newCharacter:WaitForChild("HumanoidRootPart", 5)
-            DisableCharacterCollision(newCharacter)
-        end)
+        collisionRecovery = {}
 
         antiFlingConnection = RunService.Heartbeat:Connect(function()
+            RestoreSettledCollisions()
+
             local character = LocalPlayer.Character
             if character then
                 local hrp = character:FindFirstChild("HumanoidRootPart")
@@ -598,24 +589,15 @@ local function ToggleAntiFling()
 
                     -- Zero excess linear AND angular velocity on EVERY part
                     -- (spin-based flings show up as angular velocity even
-                    -- when linear looks fine). Also re-enforce
-                    -- CanCollide=false every frame, not just once at spawn —
-                    -- body parts can stream in slightly after
-                    -- HumanoidRootPart on respawn, and a part that loads in
-                    -- after the one-time spawn check would otherwise keep
-                    -- its default collidable state.
+                    -- when linear looks fine), and briefly drop collision
+                    -- on any part that's actively spiking — normal parts
+                    -- stay fully collidable the whole time.
                     for _, part in pairs(character:GetDescendants()) do
                         if part:IsA("BasePart") then
-                            if part.CanCollide then
-                                if originalCollide[part] == nil then
-                                    originalCollide[part] = true
-                                end
-                                part.CanCollide = false
-                            end
-
                             local partVel = part.AssemblyLinearVelocity
                             local partAngVel = part.AssemblyAngularVelocity
                             if partVel.Magnitude > maxSafeVelocity or partAngVel.Magnitude > maxSafeAngularVelocity then
+                                DisablePartCollisionTemporarily(part)
                                 part.AssemblyLinearVelocity = Vector3.new(0, math.max(partVel.Y, -50), 0)
                                 part.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
                             end
@@ -662,7 +644,8 @@ local function ToggleAntiFling()
             -- extreme velocity — if we neutralize THEIR velocity/collision
             -- the instant it spikes, their character physically can't be
             -- used as a battering ram against you, regardless of what
-            -- caused their velocity to spike in the first place.
+            -- caused their velocity to spike in the first place. Their
+            -- collision is restored automatically too, same as yours.
             for _, player in pairs(Players:GetPlayers()) do
                 if player ~= LocalPlayer and player.Character then
                     local theirHRP = player.Character:FindFirstChild("HumanoidRootPart")
@@ -680,11 +663,16 @@ local function ToggleAntiFling()
                 end
             end
         end)
-        print("🛡️ Anti-Fling Enabled (collision disabled)")
+        print("🛡️ Anti-Fling Enabled")
     else
         if antiFlingConnection then antiFlingConnection:Disconnect() end
-        if antiFlingCharacterConnection then antiFlingCharacterConnection:Disconnect() end
-        RestoreCharacterCollision()
+        -- Restore anything still mid-cooldown immediately on disable
+        for part in pairs(collisionRecovery) do
+            if part and part.Parent then
+                part.CanCollide = true
+            end
+        end
+        collisionRecovery = {}
         print("❌ Anti-Fling Disabled")
     end
 end
