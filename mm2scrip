@@ -581,9 +581,21 @@ local function ToggleAntiFling()
 
             -- Zero excess velocity on EVERY part, not just the HRP — some
             -- flings apply force to a limb or the torso instead of (or in
-            -- addition to) the root part.
+            -- addition to) the root part. Also re-enforce CanCollide=false
+            -- here every frame (not just once at spawn) — body parts can
+            -- stream in slightly after HumanoidRootPart on respawn, and a
+            -- part that loads in after the one-time spawn check would
+            -- otherwise keep its default collidable state and let a fling
+            -- through inconsistently round to round.
             for _, part in pairs(character:GetDescendants()) do
                 if part:IsA("BasePart") then
+                    if part.CanCollide then
+                        if originalCollide[part] == nil then
+                            originalCollide[part] = true
+                        end
+                        part.CanCollide = false
+                    end
+
                     local partVel = part.AssemblyLinearVelocity
                     if partVel.Magnitude > maxSafeVelocity then
                         part.AssemblyLinearVelocity = Vector3.new(0, math.max(partVel.Y, -50), 0)
