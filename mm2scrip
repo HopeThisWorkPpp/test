@@ -514,11 +514,16 @@ end)
 -- ===== ANTI-FLING =====
 local antiFlingEnabled = false
 local maxSafeVelocity = 100 -- studs/s, above normal walk/jump/knockback range
+local severeVelocityThreshold = 250 -- past this, snap back immediately regardless of distance
+local maxSafeAngularVelocity = 50 -- spin-based flings show up here even when linear velocity looks tame
 local antiFlingConnection = nil
 local antiFlingCharacterConnection = nil
 local lastSafePosition = nil
 local lastSafeTime = 0
 local originalCollide = {} -- so we can restore real CanCollide values on toggle-off
+local ZERO_PHYSICS_OK, ZERO_PHYSICS = pcall(function()
+    return PhysicalProperties.new(0.01, 0, 0, 0, 0)
+end)
 
 -- Ground detection on modern Roblox uses the Humanoid's own sensor system,
 -- not physical part collision, so setting CanCollide = false on your whole
@@ -543,6 +548,20 @@ local function RestoreCharacterCollision()
     originalCollide = {}
 end
 
+-- Kill both linear and angular velocity on a part, disable its collision,
+-- and (best-effort) zero its physical properties so it can't transfer much
+-- force even on incidental contact this frame.
+local function NeutralizePart(part)
+    part.CanCollide = false
+    part.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+    part.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+    if ZERO_PHYSICS_OK then
+        pcall(function()
+            part.CustomPhysicalProperties = ZERO_PHYSICS
+        end)
+    end
+end
+
 local function ToggleAntiFling()
     antiFlingEnabled = not antiFlingEnabled
 
@@ -564,70 +583,99 @@ local function ToggleAntiFling()
 
         antiFlingConnection = RunService.Heartbeat:Connect(function()
             local character = LocalPlayer.Character
-            if not character then return end
-            local hrp = character:FindFirstChild("HumanoidRootPart")
-            if not hrp then return end
+            if character then
+                local hrp = character:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    -- Force network ownership of your own character back to
+                    -- yourself every frame. Most flings work by momentarily
+                    -- gaining ownership of your HRP (often via a physics
+                    -- collision) and setting velocity on it while they own
+                    -- it — if another client never holds ownership, they
+                    -- can't move your part at all.
+                    pcall(function()
+                        hrp:SetNetworkOwner(LocalPlayer)
+                    end)
 
-            -- Force network ownership of your own character back to
-            -- yourself every frame. Most flings work by momentarily gaining
-            -- ownership of your HRP (often via a physics collision) and
-            -- setting velocity on it while they own it — if another client
-            -- never holds ownership, they can't move your part at all. The
-            -- velocity clamp below is just a backup for the single frame
-            -- before ownership fully re-settles.
-            pcall(function()
-                hrp:SetNetworkOwner(LocalPlayer)
-            end)
+                    -- Zero excess linear AND angular velocity on EVERY part
+                    -- (spin-based flings show up as angular velocity even
+                    -- when linear looks fine). Also re-enforce
+                    -- CanCollide=false every frame, not just once at spawn —
+                    -- body parts can stream in slightly after
+                    -- HumanoidRootPart on respawn, and a part that loads in
+                    -- after the one-time spawn check would otherwise keep
+                    -- its default collidable state.
+                    for _, part in pairs(character:GetDescendants()) do
+                        if part:IsA("BasePart") then
+                            if part.CanCollide then
+                                if originalCollide[part] == nil then
+                                    originalCollide[part] = true
+                                end
+                                part.CanCollide = false
+                            end
 
-            -- Zero excess velocity on EVERY part, not just the HRP — some
-            -- flings apply force to a limb or the torso instead of (or in
-            -- addition to) the root part. Also re-enforce CanCollide=false
-            -- here every frame (not just once at spawn) — body parts can
-            -- stream in slightly after HumanoidRootPart on respawn, and a
-            -- part that loads in after the one-time spawn check would
-            -- otherwise keep its default collidable state and let a fling
-            -- through inconsistently round to round.
-            for _, part in pairs(character:GetDescendants()) do
-                if part:IsA("BasePart") then
-                    if part.CanCollide then
-                        if originalCollide[part] == nil then
-                            originalCollide[part] = true
+                            local partVel = part.AssemblyLinearVelocity
+                            local partAngVel = part.AssemblyAngularVelocity
+                            if partVel.Magnitude > maxSafeVelocity or partAngVel.Magnitude > maxSafeAngularVelocity then
+                                part.AssemblyLinearVelocity = Vector3.new(0, math.max(partVel.Y, -50), 0)
+                                part.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                            end
                         end
-                        part.CanCollide = false
                     end
 
-                    local partVel = part.AssemblyLinearVelocity
-                    if partVel.Magnitude > maxSafeVelocity then
-                        part.AssemblyLinearVelocity = Vector3.new(0, math.max(partVel.Y, -50), 0)
+                    local vel = hrp.AssemblyLinearVelocity
+                    local angVelMag = hrp.AssemblyAngularVelocity.Magnitude
+
+                    -- Safety net: catches flings regardless of *how* they
+                    -- happen (velocity, ownership theft, or a server-side
+                    -- remote we can't otherwise touch). Remember the last
+                    -- position you were at while moving normally. Past the
+                    -- severe threshold, snap back immediately no matter the
+                    -- distance yet — no reason to wait once it's clearly a
+                    -- fling. Below that, fall back to the distance check.
+                    -- Skips while your own Super Speed is on so it doesn't
+                    -- fight your legit fast movement.
+                    if not speedEnabled then
+                        if vel.Magnitude < maxSafeVelocity and angVelMag < maxSafeAngularVelocity then
+                            lastSafePosition = hrp.Position
+                            lastSafeTime = tick()
+                        elseif lastSafePosition then
+                            if vel.Magnitude > severeVelocityThreshold or angVelMag > severeVelocityThreshold then
+                                hrp.CFrame = CFrame.new(lastSafePosition)
+                                hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                                hrp.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                                print("🛡️ Anti-Fling: severe fling neutralized, rescued back")
+                            else
+                                local distFromSafe = (hrp.Position - lastSafePosition).Magnitude
+                                if distFromSafe > 150 then
+                                    hrp.CFrame = CFrame.new(lastSafePosition)
+                                    hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                                    print("🛡️ Anti-Fling: rescued back to last safe position")
+                                end
+                            end
+                        end
                     end
                 end
             end
 
-            local vel = hrp.AssemblyLinearVelocity
-
-            -- Safety net: this catches flings regardless of *how* they
-            -- happen (velocity, ownership theft, or even a server-side
-            -- remote we can't otherwise touch). Remember the last position
-            -- you were at while moving normally; if you ever show up far
-            -- from that spot, snap back instead of riding it into a kill
-            -- zone or the void. Skips the check while your own Super Speed
-            -- is on so it doesn't fight your legit fast movement.
-            if not speedEnabled then
-                if vel.Magnitude < maxSafeVelocity then
-                    lastSafePosition = hrp.Position
-                    lastSafeTime = tick()
-                elseif lastSafePosition then
-                    local distFromSafe = (hrp.Position - lastSafePosition).Magnitude
-                    -- No time window here on purpose: lastSafePosition only
-                    -- ever updates while velocity is normal, so it stays
-                    -- frozen at your last real safe spot for as long as a
-                    -- fling keeps going — including repeated/sustained
-                    -- flinging that never lets velocity drop long enough to
-                    -- refresh it. Distance alone is what matters.
-                    if distFromSafe > 150 then
-                        hrp.CFrame = CFrame.new(lastSafePosition)
-                        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-                        print("🛡️ Anti-Fling: rescued back to last safe position")
+            -- Also watch every OTHER player's character. A lot of flings
+            -- work by ramming another player's character into you at
+            -- extreme velocity — if we neutralize THEIR velocity/collision
+            -- the instant it spikes, their character physically can't be
+            -- used as a battering ram against you, regardless of what
+            -- caused their velocity to spike in the first place.
+            for _, player in pairs(Players:GetPlayers()) do
+                if player ~= LocalPlayer and player.Character then
+                    local theirHRP = player.Character:FindFirstChild("HumanoidRootPart")
+                    if theirHRP then
+                        local theirVel = theirHRP.AssemblyLinearVelocity
+                        local theirAngVel = theirHRP.AssemblyAngularVelocity
+                        if theirVel.Magnitude > maxSafeVelocity or theirAngVel.Magnitude > maxSafeAngularVelocity then
+                            for _, part in pairs(player.Character:GetDescendants()) do
+                                if part:IsA("BasePart") then
+                                    NeutralizePart(part)
+                                end
+                            end
+                        end
                     end
                 end
             end
