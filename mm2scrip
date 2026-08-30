@@ -1076,6 +1076,70 @@ local function PerformAttack()
 end
 
 -- ===== AUTO-SHOOT =====
+-- Checks whether anything solid sits between you and the target before
+-- committing to a shot. Without this, auto-shoot will happily fire through
+-- walls/props it can't actually see through — those attempts just miss (the
+-- server's own hit validation blocks them) and repeatedly firing at an
+-- impossible angle is also a pattern anti-cheat can flag.
+local function HasLineOfSight(targetHRP)
+    local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not myHRP then return false end
+
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    rayParams.FilterDescendantsInstances = {LocalPlayer.Character}
+
+    local direction = targetHRP.Position - myHRP.Position
+    local result = Workspace:Raycast(myHRP.Position, direction, rayParams)
+
+    if not result then
+        return true -- nothing solid hit before reaching the target's position
+    end
+
+    -- Clear only if whatever we hit first is part of the target's own
+    -- character (i.e. we hit them, not a wall in front of them).
+    return result.Instance:IsDescendantOf(targetHRP.Parent)
+end
+
+-- ===== LOCK ON (CAMERA) =====
+local lockOnEnabled = false
+local lockOnConnection = nil
+local lockSmoothness = 0.25 -- 0 = never moves, 1 = instant snap each frame
+
+local function ToggleLockOn()
+    lockOnEnabled = not lockOnEnabled
+
+    if lockOnEnabled then
+        lockOnConnection = RunService.RenderStepped:Connect(function()
+            local role = GetMyRole()
+            local target
+
+            if role == "Sheriff" then
+                target = GetMurderer()
+            elseif role == "Murderer" then
+                target = GetNearestPlayer()
+            end
+
+            if not target or not target.Character then return end
+            local targetHRP = target.Character:FindFirstChild("HumanoidRootPart")
+            if not targetHRP then return end
+
+            local lookAt = targetHRP.Position + Vector3.new(0, verticalOffset, 0)
+            local currentCFrame = Camera.CFrame
+            local desiredCFrame = CFrame.new(currentCFrame.Position, lookAt)
+
+            -- Smoothly rotate toward the target instead of snapping — a hard
+            -- snap every frame feels jarring and is an obvious tell that
+            -- something's automating your camera.
+            Camera.CFrame = currentCFrame:Lerp(desiredCFrame, lockSmoothness)
+        end)
+        print("🔒 Lock On Enabled")
+    else
+        if lockOnConnection then lockOnConnection:Disconnect() end
+        print("🔓 Lock On Disabled")
+    end
+end
+
 local function AutoShootLoop()
     if not autoShoot then return end
 
@@ -1097,7 +1161,7 @@ local function AutoShootLoop()
     local screenPos, onScreen = Camera:WorldToViewportPoint(targetHRP.Position)
     if onScreen then
         local distance = (Vector2.new(screenPos.X, screenPos.Y) - Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)).Magnitude
-        if distance < fovRadius then
+        if distance < fovRadius and HasLineOfSight(targetHRP) then
             PerformAttack()
             task.wait(math.random(150, 350) / 1000)
         end
@@ -1215,6 +1279,24 @@ MainTab:CreateToggle({
         else
             print("❌ Auto-shoot disabled")
         end
+    end
+})
+
+MainTab:CreateToggle({
+    Name = "Lock On (Camera)",
+    CurrentValue = false,
+    Callback = function(Value)
+        ToggleLockOn()
+    end
+})
+
+MainTab:CreateSlider({
+    Name = "Lock On Smoothness",
+    Range = {0.05, 1},
+    Increment = 0.05,
+    CurrentValue = 0.25,
+    Callback = function(Value)
+        lockSmoothness = Value
     end
 })
 
