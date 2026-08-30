@@ -1102,6 +1102,19 @@ local function HasLineOfSight(targetHRP)
     return result.Instance:IsDescendantOf(targetHRP.Parent)
 end
 
+-- Specifically checks whether the gun/knife is currently HELD (a child of
+-- your Character), not just sitting in your Backpack. GetMyRole() checks
+-- both, since shooting/throwing auto-equips from the Backpack anyway — but
+-- Lock On is passive and shouldn't move your camera before you've actually
+-- drawn the weapon.
+local function GetEquippedWeaponRole()
+    local character = LocalPlayer.Character
+    if not character then return "Innocent" end
+    if character:FindFirstChild("Knife") then return "Murderer" end
+    if character:FindFirstChild("Gun") then return "Sheriff" end
+    return "Innocent"
+end
+
 -- ===== LOCK ON (CAMERA) =====
 local lockOnEnabled = false
 local lockOnConnection = nil
@@ -1112,11 +1125,12 @@ local function ToggleLockOn()
 
     if lockOnEnabled then
         lockOnConnection = RunService.RenderStepped:Connect(function()
-            local role = GetMyRole()
+            local role = GetEquippedWeaponRole()
 
-            -- Only ever lock on while a weapon is actually equipped —
-            -- innocent (unarmed) never gets a target, so the camera stays
-            -- fully under your control until you pick up a gun or knife.
+            -- Only ever lock on while the weapon is actually drawn/held —
+            -- owning it in your Backpack doesn't count, and being unarmed
+            -- never gets a target, so the camera stays fully under your
+            -- control until you actually equip the gun or knife.
             if role ~= "Sheriff" and role ~= "Murderer" then return end
 
             local target
