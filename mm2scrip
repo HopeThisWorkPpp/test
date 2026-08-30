@@ -28,6 +28,7 @@ local TweenService = game:GetService("TweenService")
 
 -- ===== VARIABLES =====
 local prediction = 0.185
+local predictionStrength = 1.0 -- multiplies the whole predicted offset — turn down if shots overshoot, up if they undershoot
 local verticalOffset = 0.8
 local isMobile = UserInputService.TouchEnabled
 local mobileGUI = nil
@@ -929,7 +930,7 @@ end
 -- airborne — applying it while grounded was dragging shots into the floor.
 local function PredictTargetPosition(targetHRP, targetHumanoid)
     local rawVelocity = targetHRP.AssemblyLinearVelocity
-    smoothedTargetVelocity = smoothedTargetVelocity:Lerp(rawVelocity, 0.6)
+    smoothedTargetVelocity = smoothedTargetVelocity:Lerp(rawVelocity, 0.75)
 
     -- Only compensate for how far CURRENT ping deviates from a typical
     -- baseline (~100ms one-way) — that baseline is already baked into your
@@ -938,7 +939,7 @@ local function PredictTargetPosition(targetHRP, targetHumanoid)
     local assumedBaselinePing = 0.1
     local currentOneWayPing = GetPingSeconds() * 0.5
     local pingCompensation = math.clamp(currentOneWayPing - assumedBaselinePing, -0.05, 0.15)
-    local effectivePrediction = prediction + pingCompensation
+    local effectivePrediction = (prediction + pingCompensation) * predictionStrength
 
     local predictedX = targetHRP.Position.X + (smoothedTargetVelocity.X * effectivePrediction)
     local predictedZ = targetHRP.Position.Z + (smoothedTargetVelocity.Z * effectivePrediction)
@@ -1112,8 +1113,13 @@ local function ToggleLockOn()
     if lockOnEnabled then
         lockOnConnection = RunService.RenderStepped:Connect(function()
             local role = GetMyRole()
-            local target
 
+            -- Only ever lock on while a weapon is actually equipped —
+            -- innocent (unarmed) never gets a target, so the camera stays
+            -- fully under your control until you pick up a gun or knife.
+            if role ~= "Sheriff" and role ~= "Murderer" then return end
+
+            local target
             if role == "Sheriff" then
                 target = GetMurderer()
             elseif role == "Murderer" then
@@ -1435,6 +1441,16 @@ SettingsTab:CreateSlider({
     CurrentValue = 0.185,
     Callback = function(Value)
         prediction = Value
+    end
+})
+
+SettingsTab:CreateSlider({
+    Name = "Prediction Strength",
+    Range = {0, 2},
+    Increment = 0.05,
+    CurrentValue = 1.0,
+    Callback = function(Value)
+        predictionStrength = Value
     end
 })
 
