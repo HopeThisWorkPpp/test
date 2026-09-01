@@ -910,36 +910,24 @@ end
 -- Smoothed velocity buffer (reduces jitter from jump-spam / touch input lag on mobile)
 local smoothedTargetVelocity = Vector3.new(0, 0, 0)
 
--- Live ping in seconds (round trip). Mobile connections fluctuate a lot, so
--- a fixed prediction time undershoots when latency spikes and overshoots
--- when it's low. This gets added on top of the base "Prediction Time"
--- slider to compensate for whatever your connection is doing right now.
-local function GetPingSeconds()
-    local ok, ms = pcall(function()
-        return StatsService.Network.ServerStatsItem["Data Ping"]:GetValue()
-    end)
-    if ok and ms then
-        return ms / 1000
-    end
-    return 0
-end
-
 -- Shared prediction math for both gun shots and knife throws. Horizontal is
 -- linear (roughly constant velocity over the prediction window). Vertical
 -- only gets the gravity/kinematic correction while the target is actually
 -- airborne — applying it while grounded was dragging shots into the floor.
+--
+-- Kept deliberately simple: just "Prediction Time" x "Prediction Strength"
+-- from the Settings tab, both fully in your control. An earlier version of
+-- this also auto-adjusted for live ping, but that relied on a Stats API
+-- that isn't guaranteed to read correctly on every executor/platform — if
+-- it silently failed, it added a fixed penalty to every single shot with no
+-- visible symptom pointing to why. Better to have fewer, predictable knobs
+-- you can actually tune by feel than a hidden auto-adjustment that might be
+-- quietly working against you.
 local function PredictTargetPosition(targetHRP, targetHumanoid)
     local rawVelocity = targetHRP.AssemblyLinearVelocity
-    smoothedTargetVelocity = smoothedTargetVelocity:Lerp(rawVelocity, 0.75)
+    smoothedTargetVelocity = smoothedTargetVelocity:Lerp(rawVelocity, 0.6)
 
-    -- Only compensate for how far CURRENT ping deviates from a typical
-    -- baseline (~100ms one-way) — that baseline is already baked into your
-    -- tuned 0.185s default, so this only kicks in during lag spikes/dips
-    -- instead of shifting normal-condition shots that were already working.
-    local assumedBaselinePing = 0.1
-    local currentOneWayPing = GetPingSeconds() * 0.5
-    local pingCompensation = math.clamp(currentOneWayPing - assumedBaselinePing, -0.05, 0.15)
-    local effectivePrediction = (prediction + pingCompensation) * predictionStrength
+    local effectivePrediction = prediction * predictionStrength
 
     local predictedX = targetHRP.Position.X + (smoothedTargetVelocity.X * effectivePrediction)
     local predictedZ = targetHRP.Position.Z + (smoothedTargetVelocity.Z * effectivePrediction)
@@ -1449,7 +1437,7 @@ FlingTab:CreateSlider({
 -- Settings Tab
 SettingsTab:CreateSlider({
     Name = "Prediction Time",
-    Range = {0.1, 0.3},
+    Range = {0.05, 0.5},
     Increment = 0.005,
     Suffix = "s",
     CurrentValue = 0.185,
@@ -1470,7 +1458,7 @@ SettingsTab:CreateSlider({
 
 SettingsTab:CreateSlider({
     Name = "Vertical Offset",
-    Range = {0.3, 2.0},
+    Range = {0, 2.0},
     Increment = 0.05,
     Suffix = "studs",
     CurrentValue = 0.8,
