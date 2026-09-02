@@ -915,19 +915,16 @@ local smoothedTargetVelocity = Vector3.new(0, 0, 0)
 -- only gets the gravity/kinematic correction while the target is actually
 -- airborne — applying it while grounded was dragging shots into the floor.
 --
--- Kept deliberately simple: just "Prediction Time" x "Prediction Strength"
--- from the Settings tab, both fully in your control. An earlier version of
--- this also auto-adjusted for live ping, but that relied on a Stats API
--- that isn't guaranteed to read correctly on every executor/platform — if
--- it silently failed, it added a fixed penalty to every single shot with no
--- visible symptom pointing to why. Better to have fewer, predictable knobs
--- you can actually tune by feel than a hidden auto-adjustment that might be
--- quietly working against you.
-local function PredictTargetPosition(targetHRP, targetHumanoid)
+-- timeOverride lets a caller supply its own prediction window instead of
+-- the flat "Prediction Time" x "Prediction Strength" default — used by the
+-- gun to scale with distance (see ShootMurderer), since a real bullet takes
+-- longer to reach a far target than a close one, unlike a knife thrown at
+-- someone right next to you.
+local function PredictTargetPosition(targetHRP, targetHumanoid, timeOverride)
     local rawVelocity = targetHRP.AssemblyLinearVelocity
     smoothedTargetVelocity = smoothedTargetVelocity:Lerp(rawVelocity, 0.6)
 
-    local effectivePrediction = prediction * predictionStrength
+    local effectivePrediction = timeOverride or (prediction * predictionStrength)
 
     local predictedX = targetHRP.Position.X + (smoothedTargetVelocity.X * effectivePrediction)
     local predictedZ = targetHRP.Position.Z + (smoothedTargetVelocity.Z * effectivePrediction)
@@ -949,6 +946,12 @@ local function PredictTargetPosition(targetHRP, targetHumanoid)
     return Vector3.new(predictedX, predictedY, predictedZ) + Vector3.new(0, verticalOffset, 0)
 end
 
+-- Assumed bullet travel speed in studs/s, and a small fixed reaction-time
+-- floor on top of it. Tune bulletSpeed in Settings: lower it if shots at
+-- range still land behind the murderer, raise it if they now overshoot.
+local bulletSpeed = 200
+local gunReactionTime = 0.05
+
 local function ShootMurderer()
     local murderer = GetMurderer()
     if not murderer or not murderer.Character then return end
@@ -964,8 +967,14 @@ local function ShootMurderer()
     local shootRemote = gun:FindFirstChild("Shoot")
     if not shootRemote then return end
 
+    -- Distance-scaled prediction instead of the flat default: a target
+    -- twice as far away needs roughly twice the lead time for a real
+    -- projectile to reach them, which a fixed time constant can't capture.
+    local distance = (targetHRP.Position - myHRP.Position).Magnitude
+    local travelTime = (distance / bulletSpeed) + gunReactionTime
+
     local targetHumanoid = murderer.Character:FindFirstChild("Humanoid")
-    local predicted = PredictTargetPosition(targetHRP, targetHumanoid)
+    local predicted = PredictTargetPosition(targetHRP, targetHumanoid, travelTime)
 
     local args = {
         CFrame.new(myHRP.Position, predicted),
@@ -1014,6 +1023,46 @@ local function DebugKnife()
     end
     if not found then
         print("(none found — the remote may be nested in a folder with a generic name, or fired via a different service)")
+    end
+end
+
+local function DebugGun()
+    local gun = EquipGun()
+    if not gun then
+        warn("⚠️ No Gun found in Backpack or Character")
+        return
+    end
+
+    print("=== Gun tool children (ClassName: Name) ===")
+    for _, child in pairs(gun:GetChildren()) do
+        print(child.ClassName .. ": " .. child.Name)
+    end
+
+    -- Check inside any subfolder (e.g. "Events") — same pattern the Knife
+    -- turned out to use. If Gun has one too and "Shoot" isn't actually in
+    -- it (or there's a second, more specific remote in there), that would
+    -- explain why the gun's accuracy hasn't matched the knife's.
+    local eventsFolder = gun:FindFirstChild("Events")
+    if eventsFolder then
+        print("=== Contents of Gun.Events ===")
+        for _, child in pairs(eventsFolder:GetChildren()) do
+            print(child.ClassName .. ": " .. child.Name)
+        end
+    end
+
+    print("=== ReplicatedStorage remotes matching 'gun' or 'shoot' or 'bullet' or 'fire' ===")
+    local found = false
+    for _, obj in pairs(ReplicatedStorage:GetDescendants()) do
+        if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
+            local lname = obj.Name:lower()
+            if lname:find("gun") or lname:find("shoot") or lname:find("bullet") or lname:find("fire") then
+                print(obj.ClassName .. ": " .. obj:GetFullName())
+                found = true
+            end
+        end
+    end
+    if not found then
+        print("(none found in ReplicatedStorage)")
     end
 end
 
@@ -1315,6 +1364,13 @@ MainTab:CreateButton({
     end
 })
 
+MainTab:CreateButton({
+    Name = "Debug Gun Remote (check console)",
+    Callback = function()
+        DebugGun()
+    end
+})
+
 MainTab:CreateKeybind({
     Name = "Manual Shoot (Q)",
     CurrentKeybind = "Q",
@@ -1453,6 +1509,17 @@ SettingsTab:CreateSlider({
     CurrentValue = 1.0,
     Callback = function(Value)
         predictionStrength = Value
+    end
+})
+
+SettingsTab:CreateSlider({
+    Name = "Bullet Speed (Gun only)",
+    Range = {50, 500},
+    Increment = 10,
+    Suffix = "studs/s",
+    CurrentValue = 200,
+    Callback = function(Value)
+        bulletSpeed = Value
     end
 })
 
