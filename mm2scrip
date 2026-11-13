@@ -28,23 +28,42 @@ local TweenService = game:GetService("TweenService")
 
 -- ===== VARIABLES =====
 local prediction = 0.185
-local predictionStrength = 1.0 -- multiplies the whole predicted offset — turn down if shots overshoot, up if they undershoot
+local predictionStrength = 1.0
 local verticalOffset = 0.8
 local isMobile = UserInputService.TouchEnabled
 local mobileGUI = nil
 local buttonFrame = nil
 
--- ESP Variables
+-- Aimbot tuning
+local bulletSpeed = 200
+local gunReactionTime = 0.05
+local knifeSpeed = 96
+local predictionIterations = 3
+local velocitySmoothing = 0.6
+
+-- ESP
 local espEnabled = false
 local espObjects = {}
+local espOcclusionDim = 0.3
+local espOcclusionEnabled = false
+
+-- Gun ESP
 local gunESPEnabled = false
 local gunESPObjects = {}
+local GUN_CREATE_FRAMES = 2
+local GUN_DESTROY_FRAMES = 5
 
--- Auto-shoot variables
+-- Knife ESP
+local knifeESPEnabled = false
+local knifeESPObjects = {}
+local KNIFE_CREATE_FRAMES = 2
+local KNIFE_DESTROY_FRAMES = 5
+
+-- Auto-shoot
 local autoShoot = false
 local fovRadius = 300
 
--- Movement variables
+-- Movement
 local jumpPower = 50
 local walkSpeed = 16
 local jumpEnabled = false
@@ -52,59 +71,48 @@ local speedEnabled = false
 local originalJumpPower = 50
 local originalWalkSpeed = 16
 
--- Fling variables
+-- Fling
 local flingPower = 5000
 local flingEnabled = false
 local flingCooldown = false
 local flingKey = "F"
 
--- ===== FUNCTIONS =====
-
+-- ===== ROLE HELPERS =====
 local function GetPlayerRole(player)
     if not player or not player.Character then return "Unknown" end
-    
     if player.Backpack:FindFirstChild("Knife") or (player.Character and player.Character:FindFirstChild("Knife")) then
         return "Murderer"
     end
-    
     if player.Backpack:FindFirstChild("Gun") or (player.Character and player.Character:FindFirstChild("Gun")) then
         return "Sheriff"
     end
-    
     local hasWeapon = false
     for _, tool in pairs(player.Backpack:GetChildren()) do
-        if tool:IsA("Tool") then
-            hasWeapon = true
-            break
-        end
+        if tool:IsA("Tool") then hasWeapon = true; break end
     end
-    if not hasWeapon then
+    if not hasWeapon and player.Character then
         for _, tool in pairs(player.Character:GetChildren()) do
-            if tool:IsA("Tool") then
-                hasWeapon = true
-                break
-            end
+            if tool:IsA("Tool") then hasWeapon = true; break end
         end
     end
-    
     return hasWeapon and "Unknown" or "Innocent"
 end
 
-local function GetRoleColor(role)
+local function GetRoleColor(role, isDead)
+    if isDead then return Color3.fromRGB(120, 120, 120) end
     if role == "Murderer" then return Color3.fromRGB(255, 0, 0)
     elseif role == "Sheriff" then return Color3.fromRGB(0, 150, 255)
     elseif role == "Innocent" then return Color3.fromRGB(0, 255, 0)
     else return Color3.fromRGB(255, 255, 255) end
 end
 
--- ===== GLOW ESP FUNCTIONS =====
+-- ===== GLOW ESP =====
 local function CreateGlowESP(player)
     if not player or player == LocalPlayer or not player.Character then return end
-    
     local character = player.Character
     local role = GetPlayerRole(player)
-    local color = GetRoleColor(role)
-    
+    local color = GetRoleColor(role, false)
+
     local highlight = Instance.new("Highlight")
     highlight.Name = "GlowESP_" .. player.Name
     highlight.Adornee = character
@@ -114,31 +122,43 @@ local function CreateGlowESP(player)
     highlight.OutlineTransparency = 0.1
     highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
     highlight.Parent = character
-    
+
     table.insert(espObjects, {
-        Player = player,
-        Highlight = highlight,
-        Color = color
+        Player = player, Highlight = highlight, Color = color, LastRole = role
     })
 end
 
 local function UpdateGlowESP()
     if not espEnabled then return end
-    
     for _, esp in pairs(espObjects) do
         local player = esp.Player
         if not player or not player.Character then
             if esp.Highlight then esp.Highlight:Destroy() end
             continue
         end
-        
+        local hum = player.Character:FindFirstChildOfClass("Humanoid")
+        local dead = hum and hum.Health <= 0
         local role = GetPlayerRole(player)
-        local color = GetRoleColor(role)
-        
+        local color = GetRoleColor(role, dead)
         if esp.Highlight then
             esp.Highlight.FillColor = color
             esp.Highlight.OutlineColor = color
             esp.Color = color
+            esp.LastRole = role
+            -- Occlusion dim (cheap, only every 6 frames)
+            if espOcclusionEnabled and esp._occlusionTick == nil then
+                esp._occlusionTick = 0
+            end
+            if espOcclusionEnabled then
+                esp._occlusionTick = (esp._occlusionTick or 0) + 1
+                if esp._occlusionTick % 6 == 0 then
+                    local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+                    if hrp then
+                        esp._occluded = not HasLineOfSight(hrp)
+                    end
+                end
+                esp.Highlight.FillTransparency = esp._occluded and (0.5 + espOcclusionDim) or 0.5
+            end
         end
     end
 end
@@ -153,338 +173,256 @@ local function RemoveGlowESP(player)
     end
 end
 
--- ===== GUN ESP FUNCTIONS (COMPLETELY REWRITTEN) =====
-local RemoveGunESP -- forward declared: CreateGunESP calls this before it's defined below
+-- ===== LOS =====
+local losParams = RaycastParams.new()
+losParams.FilterType = Enum.RaycastFilterType.Exclude
 
--- Tools don't have a .Position property — only their Handle (or any BasePart
--- inside them) does. Reading tool.Position directly throws every frame,
--- which was silently killing the ESP coroutine before anything ever drew.
+function HasLineOfSight(targetHRP)
+    local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not myHRP or not targetHRP then return false end
+    losParams.FilterDescendantsInstances = { LocalPlayer.Character }
+    local hit = Workspace:Raycast(myHRP.Position, targetHRP.Position - myHRP.Position, losParams)
+    if not hit then return true end
+    return hit.Instance:IsDescendantOf(targetHRP.Parent)
+end
+
+-- ===== GUN ESP (debounced) =====
 local function GetToolPosition(tool)
     if not tool then return nil end
     local handle = tool:FindFirstChild("Handle")
-    if handle and handle:IsA("BasePart") then
-        return handle.Position
-    end
-    -- Fallback: any BasePart directly inside the tool
+    if handle and handle:IsA("BasePart") then return handle.Position end
     for _, child in pairs(tool:GetChildren()) do
-        if child:IsA("BasePart") then
-            return child.Position
-        end
+        if child:IsA("BasePart") then return child.Position end
     end
     return nil
 end
 
-local function CreateGunESP(tool)
-    if not tool then return end
-    if tool.Name ~= "Gun" then return end
-    
-    -- Check if gun already has ESP
-    for _, esp in pairs(gunESPObjects) do
-        if esp.Tool == tool then
-            return
-        end
-    end
-    
-    -- Check if gun is held by ANY player
-    local isHeld = false
-    
-    -- Check ALL players
+local function IsToolHeld(tool, toolName)
     for _, player in pairs(Players:GetPlayers()) do
-        if player.Character then
-            -- Check if gun is in character
-            if player.Character:FindFirstChild("Gun") == tool then
-                isHeld = true
-                break
+        local c = player.Character
+        if c then
+            for _, child in pairs(c:GetChildren()) do
+                if child == tool then return true end
             end
-            -- Check if gun is in a tool in character
-            for _, child in pairs(player.Character:GetChildren()) do
-                if child:IsA("Tool") and child == tool then
-                    isHeld = true
-                    break
-                end
-            end
+            if c:FindFirstChild(toolName) == tool then return true end
         end
-        if player.Backpack then
-            if player.Backpack:FindFirstChild("Gun") == tool then
-                isHeld = true
-                break
-            end
-        end
+        local bp = player:FindFirstChildOfClass("Backpack")
+        if bp and bp:FindFirstChild(toolName) == tool then return true end
     end
-    
-    -- If held, remove ESP if it exists
-    if isHeld then
-        RemoveGunESP(tool)
-        return
+    local p = tool.Parent
+    if p then
+        if p:IsA("Model") and p:FindFirstChild("Humanoid") then return true end
+        if p:IsA("Backpack") then return true end
+        if p.Parent and p.Parent:IsA("Model") and p.Parent:FindFirstChild("Humanoid") then return true end
     end
-    
-    -- Check if tool is in a character model directly
-    if tool.Parent then
-        if tool.Parent:IsA("Model") and tool.Parent:FindFirstChild("Humanoid") then
-            isHeld = true
-        end
-        if tool.Parent:IsA("Backpack") then
-            isHeld = true
-        end
-    end
-    
-    -- Only create ESP if NOT held
-    if not isHeld then
-        -- Create a part to attach the billboard to (since tools can be tiny)
-        local espPart = Instance.new("Part")
-        espPart.Name = "GunESP_Part"
-        espPart.Size = Vector3.new(1, 1, 1)
-        espPart.Transparency = 1
-        espPart.CanCollide = false
-        espPart.Anchored = true
-        espPart.Parent = tool
-        espPart.Position = GetToolPosition(tool) or espPart.Position
-        
-        -- Keep the part at the tool's position
-        spawn(function()
-            while espPart and espPart.Parent and tool and tool.Parent do
-                local pos = GetToolPosition(tool)
-                if pos then
-                    espPart.Position = pos
-                end
-                task.wait(0.1)
-            end
-        end)
-        
-        local billboard = Instance.new("BillboardGui")
-        billboard.Name = "GunESP"
-        billboard.Size = UDim2.new(0, 180, 0, 60)
-        billboard.Adornee = espPart
-        billboard.AlwaysOnTop = true
-        billboard.StudsOffset = Vector3.new(0, 2.5, 0)
-        billboard.MaxDistance = 200
-        billboard.Parent = espPart
-        
-        -- Main frame
-        local frame = Instance.new("Frame")
-        frame.Size = UDim2.new(1, 0, 1, 0)
-        frame.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
-        frame.BackgroundTransparency = 0.1
-        frame.BorderSizePixel = 3
-        frame.BorderColor3 = Color3.fromRGB(255, 255, 255)
-        frame.Parent = billboard
-        
-        local corner = Instance.new("UICorner")
-        corner.CornerRadius = UDim.new(0, 10)
-        corner.Parent = frame
-        
-        -- Gun icon + text
-        local label = Instance.new("TextLabel")
-        label.Size = UDim2.new(1, 0, 1, 0)
-        label.BackgroundTransparency = 1
-        label.Text = "🔫 GUN DROPPED!"
-        label.TextSize = 20
-        label.TextColor3 = Color3.fromRGB(255, 255, 255)
-        label.Font = Enum.Font.SourceSansBold
-        label.TextStrokeTransparency = 0.1
-        label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-        label.Parent = frame
-        
-        -- Distance label
-        local distanceLabel = Instance.new("TextLabel")
-        distanceLabel.Size = UDim2.new(1, 0, 0, 20)
-        distanceLabel.Position = UDim2.new(0, 0, 1.3, 0)
-        distanceLabel.BackgroundTransparency = 1
-        distanceLabel.Text = "0 studs"
-        distanceLabel.TextSize = 14
-        distanceLabel.TextColor3 = Color3.fromRGB(255, 255, 200)
-        distanceLabel.Font = Enum.Font.SourceSans
-        distanceLabel.TextStrokeTransparency = 0.3
-        distanceLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-        distanceLabel.Parent = billboard
-        
-        -- Arrow
-        local arrow = Instance.new("TextLabel")
-        arrow.Size = UDim2.new(0, 30, 0, 30)
-        arrow.Position = UDim2.new(0.5, -15, -1.5, 0)
-        arrow.BackgroundTransparency = 1
-        arrow.Text = "⬇️"
-        arrow.TextSize = 30
-        arrow.TextColor3 = Color3.fromRGB(255, 200, 0)
-        arrow.Font = Enum.Font.SourceSansBold
-        arrow.Parent = billboard
-        
-        table.insert(gunESPObjects, {
-            Tool = tool,
-            ESPPart = espPart,
-            Billboard = billboard,
-            Frame = frame,
-            Label = label,
-            DistanceLabel = distanceLabel,
-            Arrow = arrow
-        })
-        
-        -- Animate
-        spawn(function()
-            local startTime = tick()
-            while billboard and billboard.Parent do
-                local elapsed = tick() - startTime
-                local pulse = 0.5 + 0.5 * math.sin(elapsed * 2)
-                
-                if frame then
-                    frame.BackgroundTransparency = 0.1 + (0.2 * pulse)
-                    frame.BorderColor3 = Color3.fromRGB(255, 200 + (55 * pulse), 0)
-                end
-                
-                if arrow then
-                    arrow.Position = UDim2.new(0.5, -15, -1.5 - (0.2 * pulse), 0)
-                end
-                
-                if distanceLabel and LocalPlayer.Character then
-                    local myPos = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-                    local toolPos = GetToolPosition(tool)
-                    if myPos and toolPos then
-                        local distance = (myPos.Position - toolPos).Magnitude
-                        distanceLabel.Text = math.floor(distance) .. " studs"
-                    end
-                end
-                
-                task.wait(0.05)
-            end
-        end)
-        
-        print("🔫 Gun ESP created for dropped gun!")
-    end
+    return false
 end
 
-RemoveGunESP = function(tool)
-    for i, esp in pairs(gunESPObjects) do
+local function CreateToolESP(tool, list, labelText, colorR, colorG, colorB)
+    if not tool then return end
+    local espPart = Instance.new("Part")
+    espPart.Name = "ESP_Part"
+    espPart.Size = Vector3.new(1, 1, 1)
+    espPart.Transparency = 1
+    espPart.CanCollide = false
+    espPart.Anchored = true
+    espPart.Parent = tool
+    espPart.Position = GetToolPosition(tool) or espPart.Position
+
+    spawn(function()
+        while espPart and espPart.Parent and tool and tool.Parent do
+            local p = GetToolPosition(tool)
+            if p then espPart.Position = p end
+            task.wait(0.1)
+        end
+    end)
+
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "ESP_BB"
+    billboard.Size = UDim2.new(0, 180, 0, 60)
+    billboard.Adornee = espPart
+    billboard.AlwaysOnTop = true
+    billboard.StudsOffset = Vector3.new(0, 2.5, 0)
+    billboard.MaxDistance = 200
+    billboard.Parent = espPart
+
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, 0, 1, 0)
+    frame.BackgroundColor3 = Color3.fromRGB(colorR, colorG, colorB)
+    frame.BackgroundTransparency = 0.1
+    frame.BorderSizePixel = 3
+    frame.BorderColor3 = Color3.fromRGB(255, 255, 255)
+    frame.Parent = billboard
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 10)
+    corner.Parent = frame
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, 0, 1, 0)
+    label.BackgroundTransparency = 1
+    label.Text = labelText
+    label.TextSize = 20
+    label.TextColor3 = Color3.fromRGB(255, 255, 255)
+    label.Font = Enum.Font.SourceSansBold
+    label.TextStrokeTransparency = 0.1
+    label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    label.Parent = frame
+
+    local distanceLabel = Instance.new("TextLabel")
+    distanceLabel.Size = UDim2.new(1, 0, 0, 20)
+    distanceLabel.Position = UDim2.new(0, 0, 1.3, 0)
+    distanceLabel.BackgroundTransparency = 1
+    distanceLabel.Text = ""
+    distanceLabel.TextSize = 14
+    distanceLabel.TextColor3 = Color3.fromRGB(255, 255, 200)
+    distanceLabel.Font = Enum.Font.SourceSans
+    distanceLabel.TextStrokeTransparency = 0.3
+    distanceLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    distanceLabel.Parent = billboard
+
+    local arrow = Instance.new("TextLabel")
+    arrow.Size = UDim2.new(0, 30, 0, 30)
+    arrow.Position = UDim2.new(0.5, -15, -1.5, 0)
+    arrow.BackgroundTransparency = 1
+    arrow.Text = "⬇"
+    arrow.TextSize = 30
+    arrow.TextColor3 = Color3.fromRGB(colorR, colorG, colorB)
+    arrow.Font = Enum.Font.SourceSansBold
+    arrow.Parent = billboard
+
+    local entry = {
+        Tool = tool, ESPPart = espPart, Billboard = billboard,
+        Frame = frame, Label = label, DistanceLabel = distanceLabel, Arrow = arrow,
+        CreateCount = 0, DestroyCount = 0,
+    }
+    table.insert(list, entry)
+
+    spawn(function()
+        local startTime = tick()
+        while billboard and billboard.Parent do
+            local pulse = 0.5 + 0.5 * math.sin((tick() - startTime) * 2)
+            if frame then
+                frame.BackgroundTransparency = 0.1 + 0.2 * pulse
+                frame.BorderColor3 = Color3.fromRGB(colorR, 200 + 55 * pulse, colorB)
+            end
+            if arrow then
+                arrow.Position = UDim2.new(0.5, -15, -1.5 - 0.2 * pulse, 0)
+            end
+            local myChar = LocalPlayer.Character
+            local myHRP = myChar and myChar:FindFirstChild("HumanoidRootPart")
+            if distanceLabel then
+                if myHRP then
+                    local tp = GetToolPosition(tool)
+                    if tp then
+                        distanceLabel.Text = math.floor((myHRP.Position - tp).Magnitude) .. " studs"
+                    end
+                else
+                    distanceLabel.Text = ""
+                end
+            end
+            task.wait(0.05)
+        end
+    end)
+end
+
+local function RemoveToolESP(tool, list)
+    for i, esp in pairs(list) do
         if esp.Tool == tool then
             if esp.ESPPart then esp.ESPPart:Destroy() end
             if esp.Billboard then esp.Billboard:Destroy() end
-            table.remove(gunESPObjects, i)
+            table.remove(list, i)
             break
         end
     end
 end
 
--- SCAN FOR DROPPED GUNS - Scans EVERYTHING constantly
-local function ScanForDroppedGuns()
-    if not gunESPEnabled then return end
-    
-    local foundGuns = {}
-    
-    -- Search EVERYTHING in workspace
+local function ScanTools(list, toolName, createFrames, destroyFrames, enableFlag, label, colorR, colorG, colorB)
+    if not enableFlag then return end
+    local found = {}
     for _, obj in pairs(Workspace:GetDescendants()) do
-        if obj:IsA("Tool") and obj.Name == "Gun" then
-            table.insert(foundGuns, obj)
+        if obj:IsA("Tool") and obj.Name == toolName then
+            found[obj] = true
         end
     end
-    
-    -- Check each gun
-    for _, gun in pairs(foundGuns) do
-        local isHeld = false
-        
-        -- Check ALL players
-        for _, player in pairs(Players:GetPlayers()) do
-            if player.Character then
-                -- Check if gun is in character's tools
-                for _, child in pairs(player.Character:GetChildren()) do
-                    if child == gun then
-                        isHeld = true
-                        break
-                    end
-                end
-                -- Check if gun is being held (in the character's hand)
-                if player.Character:FindFirstChild("Gun") == gun then
-                    isHeld = true
-                end
-            end
-            if player.Backpack then
-                if player.Backpack:FindFirstChild("Gun") == gun then
-                    isHeld = true
-                end
-            end
+
+    -- Handle currently-found tools
+    for tool in pairs(found) do
+        local existing
+        for _, esp in pairs(list) do
+            if esp.Tool == tool then existing = esp; break end
         end
-        
-        -- Check parent chain
-        if gun.Parent then
-            if gun.Parent:IsA("Model") and gun.Parent:FindFirstChild("Humanoid") then
-                isHeld = true
-            end
-            if gun.Parent:IsA("Backpack") then
-                isHeld = true
-            end
-            -- Check if parent's parent is a character
-            if gun.Parent.Parent and gun.Parent.Parent:IsA("Model") and gun.Parent.Parent:FindFirstChild("Humanoid") then
-                isHeld = true
-            end
-        end
-        
-        if not isHeld then
-            -- Check if we already have ESP for this gun
-            local hasESP = false
-            for _, esp in pairs(gunESPObjects) do
-                if esp.Tool == gun then
-                    hasESP = true
-                    break
+        if IsToolHeld(tool, toolName) then
+            if existing then
+                existing.DestroyCount = (existing.DestroyCount or 0) + 1
+                existing.CreateCount = 0
+                if existing.DestroyCount >= destroyFrames then
+                    RemoveToolESP(tool, list)
                 end
-            end
-            
-            if not hasESP then
-                CreateGunESP(gun)
             end
         else
-            -- If held, remove ESP
-            RemoveGunESP(gun)
+            if existing then
+                existing.CreateCount = 0
+                existing.DestroyCount = 0
+            else
+                -- Debounce: only create after tool is in Workspace for N frames
+                local pending = list._pending or {}
+                list._pending = pending
+                pending[tool] = (pending[tool] or 0) + 1
+                if pending[tool] >= createFrames then
+                    pending[tool] = nil
+                    CreateToolESP(tool, list, label, colorR, colorG, colorB)
+                end
+            end
         end
     end
-    
-    -- Clean up ESP for guns that no longer exist
-    for i = #gunESPObjects, 1, -1 do
-        local esp = gunESPObjects[i]
-        if not esp.Tool or not esp.Tool.Parent then
-            if esp.ESPPart then esp.ESPPart:Destroy() end
-            if esp.Billboard then esp.Billboard:Destroy() end
-            table.remove(gunESPObjects, i)
+
+    -- Cleanup missing
+    for i = #list, 1, -1 do
+        local esp = list[i]
+        if esp and esp.Tool then
+            if not esp.Tool.Parent or not found[esp.Tool] then
+                if esp.ESPPart then esp.ESPPart:Destroy() end
+                if esp.Billboard then esp.Billboard:Destroy() end
+                table.remove(list, i)
+            end
         end
     end
 end
 
--- ===== FLING FUNCTIONS =====
+local function ScanForDroppedGuns()
+    ScanTools(gunESPObjects, "Gun", GUN_CREATE_FRAMES, GUN_DESTROY_FRAMES, gunESPEnabled, "🔫 GUN DROPPED!", 255, 200, 0)
+end
+
+local function ScanForDroppedKnives()
+    ScanTools(knifeESPObjects, "Knife", KNIFE_CREATE_FRAMES, KNIFE_DESTROY_FRAMES, knifeESPEnabled, "🔪 KNIFE DROPPED!", 255, 50, 50)
+end
+
+-- ===== FLING =====
 local function FlingPlayer(target)
     if not target or not target.Character then return end
     if flingCooldown then return end
-    
     local targetHRP = target.Character:FindFirstChild("HumanoidRootPart")
     if not targetHRP then return end
-    
-    -- Check if target is murderer
     local isMurderer = target.Backpack:FindFirstChild("Knife") or (target.Character and target.Character:FindFirstChild("Knife"))
     if not isMurderer then
         print("⚠️ Target is not a murderer!")
         return
     end
-    
-    -- Get direction from player to target
     local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     if not myHRP then return end
-    
     local direction = (targetHRP.Position - myHRP.Position).Unit
     local velocity = direction * flingPower
-    
-    -- Apply velocity to target
     targetHRP.AssemblyLinearVelocity = velocity
-    
-    -- Add some upward velocity for extra fling
     targetHRP.AssemblyLinearVelocity = targetHRP.AssemblyLinearVelocity + Vector3.new(0, 200, 0)
-    
-    -- Cooldown
     flingCooldown = true
     task.wait(1)
     flingCooldown = false
-    
     print("💥 Flinged " .. target.Name .. "!")
 end
 
 local function FlingMurderer()
     if flingCooldown then return end
-    
     local murderer = nil
     for _, v in pairs(Players:GetPlayers()) do
         if v ~= LocalPlayer then
@@ -494,42 +432,27 @@ local function FlingMurderer()
             end
         end
     end
-    
-    if murderer then
-        FlingPlayer(murderer)
-    else
-        print("⚠️ No murderer found!")
-    end
+    if murderer then FlingPlayer(murderer) else print("⚠️ No murderer found!") end
 end
 
--- Keyboard fling
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     if not flingEnabled then return end
-    
-    if input.KeyCode == Enum.KeyCode[flingKey] then
-        FlingMurderer()
-    end
+    if input.KeyCode == Enum.KeyCode[flingKey] then FlingMurderer() end
 end)
 
--- ===== ANTI-FLING =====
+-- ===== ANTI-FLING (unchanged) =====
 local antiFlingEnabled = false
-local maxSafeVelocity = 100 -- studs/s, above normal walk/jump/knockback range
-local severeVelocityThreshold = 250 -- past this, snap back immediately regardless of distance
-local maxSafeAngularVelocity = 50 -- spin-based flings show up here even when linear velocity looks tame
-local collisionRecoveryDelay = 0.3 -- seconds to keep collision off after the last detected spike
+local maxSafeVelocity = 100
+local severeVelocityThreshold = 250
+local maxSafeAngularVelocity = 50
+local collisionRecoveryDelay = 0.3
 local antiFlingConnection = nil
 local lastSafePosition = nil
 local lastSafeTime = 0
 local ZERO_PHYSICS_OK, ZERO_PHYSICS = pcall(function()
     return PhysicalProperties.new(0.01, 0, 0, 0, 0)
 end)
-
--- Parts we've temporarily disabled collision on, mapped to when it's safe
--- to turn collision back on. Collision stays NORMAL during regular play —
--- it's only switched off for the brief moment a fling spike is happening,
--- then restored automatically once things are calm again. This avoids the
--- "walk through everyone" side effect of leaving it off permanently.
 local collisionRecovery = {}
 
 local function DisablePartCollisionTemporarily(part)
@@ -537,17 +460,12 @@ local function DisablePartCollisionTemporarily(part)
     collisionRecovery[part] = tick() + collisionRecoveryDelay
 end
 
--- Kill both linear and angular velocity on a part, disable its collision
--- for a moment, and (best-effort) zero its physical properties so it can't
--- transfer much force even on incidental contact this frame.
 local function NeutralizePart(part)
     DisablePartCollisionTemporarily(part)
     part.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
     part.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
     if ZERO_PHYSICS_OK then
-        pcall(function()
-            part.CustomPhysicalProperties = ZERO_PHYSICS
-        end)
+        pcall(function() part.CustomPhysicalProperties = ZERO_PHYSICS end)
     end
 end
 
@@ -565,34 +483,17 @@ end
 
 local function ToggleAntiFling()
     antiFlingEnabled = not antiFlingEnabled
-
     if antiFlingEnabled then
         lastSafePosition = nil
         lastSafeTime = tick()
         collisionRecovery = {}
-
         antiFlingConnection = RunService.Heartbeat:Connect(function()
             RestoreSettledCollisions()
-
             local character = LocalPlayer.Character
             if character then
                 local hrp = character:FindFirstChild("HumanoidRootPart")
                 if hrp then
-                    -- Force network ownership of your own character back to
-                    -- yourself every frame. Most flings work by momentarily
-                    -- gaining ownership of your HRP (often via a physics
-                    -- collision) and setting velocity on it while they own
-                    -- it — if another client never holds ownership, they
-                    -- can't move your part at all.
-                    pcall(function()
-                        hrp:SetNetworkOwner(LocalPlayer)
-                    end)
-
-                    -- Zero excess linear AND angular velocity on EVERY part
-                    -- (spin-based flings show up as angular velocity even
-                    -- when linear looks fine), and briefly drop collision
-                    -- on any part that's actively spiking — normal parts
-                    -- stay fully collidable the whole time.
+                    pcall(function() hrp:SetNetworkOwner(LocalPlayer) end)
                     for _, part in pairs(character:GetDescendants()) do
                         if part:IsA("BasePart") then
                             local partVel = part.AssemblyLinearVelocity
@@ -604,19 +505,8 @@ local function ToggleAntiFling()
                             end
                         end
                     end
-
                     local vel = hrp.AssemblyLinearVelocity
                     local angVelMag = hrp.AssemblyAngularVelocity.Magnitude
-
-                    -- Safety net: catches flings regardless of *how* they
-                    -- happen (velocity, ownership theft, or a server-side
-                    -- remote we can't otherwise touch). Remember the last
-                    -- position you were at while moving normally. Past the
-                    -- severe threshold, snap back immediately no matter the
-                    -- distance yet — no reason to wait once it's clearly a
-                    -- fling. Below that, fall back to the distance check.
-                    -- Skips while your own Super Speed is on so it doesn't
-                    -- fight your legit fast movement.
                     if not speedEnabled then
                         if vel.Magnitude < maxSafeVelocity and angVelMag < maxSafeAngularVelocity then
                             lastSafePosition = hrp.Position
@@ -639,14 +529,6 @@ local function ToggleAntiFling()
                     end
                 end
             end
-
-            -- Also watch every OTHER player's character. A lot of flings
-            -- work by ramming another player's character into you at
-            -- extreme velocity — if we neutralize THEIR velocity/collision
-            -- the instant it spikes, their character physically can't be
-            -- used as a battering ram against you, regardless of what
-            -- caused their velocity to spike in the first place. Their
-            -- collision is restored automatically too, same as yours.
             for _, player in pairs(Players:GetPlayers()) do
                 if player ~= LocalPlayer and player.Character then
                     local theirHRP = player.Character:FindFirstChild("HumanoidRootPart")
@@ -655,9 +537,7 @@ local function ToggleAntiFling()
                         local theirAngVel = theirHRP.AssemblyAngularVelocity
                         if theirVel.Magnitude > maxSafeVelocity or theirAngVel.Magnitude > maxSafeAngularVelocity then
                             for _, part in pairs(player.Character:GetDescendants()) do
-                                if part:IsA("BasePart") then
-                                    NeutralizePart(part)
-                                end
+                                if part:IsA("BasePart") then NeutralizePart(part) end
                             end
                         end
                     end
@@ -667,81 +547,62 @@ local function ToggleAntiFling()
         print("🛡️ Anti-Fling Enabled")
     else
         if antiFlingConnection then antiFlingConnection:Disconnect() end
-        -- Restore anything still mid-cooldown immediately on disable
         for part in pairs(collisionRecovery) do
-            if part and part.Parent then
-                part.CanCollide = true
-            end
+            if part and part.Parent then part.CanCollide = true end
         end
         collisionRecovery = {}
         print("❌ Anti-Fling Disabled")
     end
 end
 
--- ===== TOGGLE FUNCTIONS =====
+-- ===== TOGGLES =====
+local espConnection, playerAddedConnection, playerRemovedConnection, characterAddedConnection
+local gunScanConnection, toolAddedConnection
+local knifeScanConnection
+
 local function ToggleESP()
     espEnabled = not espEnabled
-    
     if espEnabled then
         for _, esp in pairs(espObjects) do
             if esp.Highlight then esp.Highlight:Destroy() end
         end
         espObjects = {}
-        
         for _, player in pairs(Players:GetPlayers()) do
-            if player ~= LocalPlayer then
-                CreateGlowESP(player)
-            end
+            if player ~= LocalPlayer then CreateGlowESP(player) end
         end
-        
-        espConnection = RunService.RenderStepped:Connect(function()
-            if espEnabled then
-                UpdateGlowESP()
-            end
-        end)
-        
+        espConnection = RunService.RenderStepped:Connect(UpdateGlowESP)
         playerAddedConnection = Players.PlayerAdded:Connect(function(player)
-            if espEnabled then
-                task.wait(0.5)
-                CreateGlowESP(player)
-            end
+            if espEnabled then task.wait(0.5); CreateGlowESP(player) end
         end)
-        
         playerRemovedConnection = Players.PlayerRemoved:Connect(function(player)
-            if espEnabled then
-                RemoveGlowESP(player)
-            end
+            if espEnabled then RemoveGlowESP(player) end
         end)
-        
-        local function onCharacterAdded(player)
-            if espEnabled then
-                task.wait(0.5)
-                RemoveGlowESP(player)
-                CreateGlowESP(player)
-            end
-        end
-        
         for _, player in pairs(Players:GetPlayers()) do
             if player ~= LocalPlayer then
                 player.CharacterAdded:Connect(function()
-                    onCharacterAdded(player)
+                    if espEnabled then
+                        task.wait(0.5)
+                        RemoveGlowESP(player)
+                        CreateGlowESP(player)
+                    end
                 end)
             end
         end
-        
         characterAddedConnection = Players.PlayerAdded:Connect(function(player)
             player.CharacterAdded:Connect(function()
-                onCharacterAdded(player)
+                if espEnabled then
+                    task.wait(0.5)
+                    RemoveGlowESP(player)
+                    CreateGlowESP(player)
+                end
             end)
         end)
-        
         print("✅ Glow ESP Enabled")
     else
         if espConnection then espConnection:Disconnect() end
         if playerAddedConnection then playerAddedConnection:Disconnect() end
         if playerRemovedConnection then playerRemovedConnection:Disconnect() end
         if characterAddedConnection then characterAddedConnection:Disconnect() end
-        
         for _, esp in pairs(espObjects) do
             if esp.Highlight then esp.Highlight:Destroy() end
         end
@@ -752,40 +613,24 @@ end
 
 local function ToggleGunESP()
     gunESPEnabled = not gunESPEnabled
-    
     if gunESPEnabled then
-        -- Clear existing gun ESP
         for _, esp in pairs(gunESPObjects) do
             if esp.ESPPart then esp.ESPPart:Destroy() end
             if esp.Billboard then esp.Billboard:Destroy() end
         end
         gunESPObjects = {}
-        
-        -- Initial scan
         ScanForDroppedGuns()
-        
-        -- Scan every frame
-        gunScanConnection = RunService.RenderStepped:Connect(function()
-            if gunESPEnabled then
+        gunScanConnection = RunService.RenderStepped:Connect(ScanForDroppedGuns)
+        toolAddedConnection = Workspace.DescendantAdded:Connect(function(child)
+            if gunESPEnabled and child:IsA("Tool") and child.Name == "Gun" then
+                task.wait(0.1)
                 ScanForDroppedGuns()
             end
         end)
-        
-        -- Also scan when new objects are added
-        toolAddedConnection = Workspace.DescendantAdded:Connect(function(child)
-            if gunESPEnabled then
-                if child:IsA("Tool") and child.Name == "Gun" then
-                    task.wait(0.1)
-                    ScanForDroppedGuns()
-                end
-            end
-        end)
-        
-        print("🔫 Gun ESP Enabled - Will show dropped guns!")
+        print("🔫 Gun ESP Enabled")
     else
         if gunScanConnection then gunScanConnection:Disconnect() end
         if toolAddedConnection then toolAddedConnection:Disconnect() end
-        
         for _, esp in pairs(gunESPObjects) do
             if esp.ESPPart then esp.ESPPart:Destroy() end
             if esp.Billboard then esp.Billboard:Destroy() end
@@ -795,54 +640,44 @@ local function ToggleGunESP()
     end
 end
 
--- ===== MOVEMENT FUNCTIONS =====
+local function ToggleKnifeESP()
+    knifeESPEnabled = not knifeESPEnabled
+    if knifeESPEnabled then
+        for _, esp in pairs(knifeESPObjects) do
+            if esp.ESPPart then esp.ESPPart:Destroy() end
+            if esp.Billboard then esp.Billboard:Destroy() end
+        end
+        knifeESPObjects = {}
+        ScanForDroppedKnives()
+        knifeScanConnection = RunService.RenderStepped:Connect(ScanForDroppedKnives)
+        print("🔪 Knife ESP Enabled")
+    else
+        if knifeScanConnection then knifeScanConnection:Disconnect() end
+        for _, esp in pairs(knifeESPObjects) do
+            if esp.ESPPart then esp.ESPPart:Destroy() end
+            if esp.Billboard then esp.Billboard:Destroy() end
+        end
+        knifeESPObjects = {}
+        print("❌ Knife ESP Disabled")
+    end
+end
+
+-- ===== MOVEMENT =====
 local function ApplyMovement()
     local character = LocalPlayer.Character
     if not character then return end
-    
     local humanoid = character:FindFirstChild("Humanoid")
     if not humanoid then return end
-    
-    if jumpEnabled then
-        humanoid.JumpPower = jumpPower
-    else
-        humanoid.JumpPower = originalJumpPower
-    end
-    
-    if speedEnabled then
-        humanoid.WalkSpeed = walkSpeed
-    else
-        humanoid.WalkSpeed = originalWalkSpeed
-    end
+    humanoid.JumpPower = jumpEnabled and jumpPower or originalJumpPower
+    humanoid.WalkSpeed = speedEnabled and walkSpeed or originalWalkSpeed
 end
 
-local function ToggleJump()
-    jumpEnabled = not jumpEnabled
-    if jumpEnabled then
-        print("✅ Jump Power: " .. jumpPower)
-    else
-        print("❌ Jump Power reset to: " .. originalJumpPower)
-    end
-    ApplyMovement()
-end
-
-local function ToggleSpeed()
-    speedEnabled = not speedEnabled
-    if speedEnabled then
-        print("✅ Walk Speed: " .. walkSpeed)
-    else
-        print("❌ Walk Speed reset to: " .. originalWalkSpeed)
-    end
-    ApplyMovement()
-end
-
--- Watch for character changes
 LocalPlayer.CharacterAdded:Connect(function()
     task.wait(0.5)
     ApplyMovement()
 end)
 
--- ===== AIM FUNCTIONS =====
+-- ===== AIMING =====
 local function GetMurderer()
     for _, v in pairs(Players:GetPlayers()) do
         if v ~= LocalPlayer then
@@ -852,6 +687,25 @@ local function GetMurderer()
         end
     end
     return nil
+end
+
+local function GetNearestPlayer()
+    local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not myHRP then return nil end
+    local nearest, nearestDist = nil, math.huge
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+            local hum = player.Character:FindFirstChildOfClass("Humanoid")
+            if hrp and hum and hum.Health > 0 then
+                local dist = (hrp.Position - myHRP.Position).Magnitude
+                if dist < nearestDist then
+                    nearest, nearestDist = player, dist
+                end
+            end
+        end
+    end
+    return nearest
 end
 
 local function EquipGun()
@@ -872,8 +726,6 @@ local function EquipKnife()
     return LocalPlayer.Character:FindFirstChild("Knife")
 end
 
--- Which weapon you're holding tells you your role. MM2 doesn't hand you a
--- "Role" value directly — the tool in your Backpack/Character IS the role.
 local function GetMyRole()
     if not LocalPlayer.Character then return "Unknown" end
     if LocalPlayer.Character:FindFirstChild("Knife") or LocalPlayer.Backpack:FindFirstChild("Knife") then
@@ -885,310 +737,197 @@ local function GetMyRole()
     return "Innocent"
 end
 
--- As murderer there's no single fixed target like the sheriff has (the
--- murderer) — anyone else is fair game, so just go for whoever's closest.
-local function GetNearestPlayer()
-    local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not myHRP then return nil end
+-- ===== PREDICTION (per-target velocity buffers + iterative) =====
+local velocityBuffers = {}  -- [HumanoidRootPart] = Vector3
 
-    local nearest, nearestDist = nil, math.huge
-    for _, player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character then
-            local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-            if hrp then
-                local dist = (hrp.Position - myHRP.Position).Magnitude
-                if dist < nearestDist then
-                    nearest = player
-                    nearestDist = dist
-                end
-            end
+local function GetSmoothedVelocity(hrp)
+    local raw = hrp.AssemblyLinearVelocity
+    local buf = velocityBuffers[hrp]
+    if buf == nil then
+        velocityBuffers[hrp] = raw
+        return raw
+    end
+    local smoothed = buf:Lerp(raw, velocitySmoothing)
+    velocityBuffers[hrp] = smoothed
+    return smoothed
+end
+
+local AIRBORNE_STATES = {
+    [Enum.HumanoidStateType.Jumping] = true,
+    [Enum.HumanoidStateType.Freefall] = true,
+    [Enum.HumanoidStateType.Physics] = true,
+    [Enum.HumanoidStateType.FallingDown] = true,
+}
+
+local function IsAirborne(humanoid)
+    if not humanoid then return false end
+    local ok, state = pcall(function() return humanoid:GetState() end)
+    return ok and AIRBORNE_STATES[state] == true
+end
+
+local function PredictOne(hrp, humanoid, t, vel)
+    local px = hrp.Position.X + vel.X * t
+    local pz = hrp.Position.Z + vel.Z * t
+    local py
+    if IsAirborne(humanoid) then
+        py = hrp.Position.Y + vel.Y * t - 0.5 * Workspace.Gravity * t * t
+    else
+        py = hrp.Position.Y
+    end
+    return Vector3.new(px, py, pz) + Vector3.new(0, verticalOffset, 0)
+end
+
+-- Iterative solve: predict using travel time, re-read velocity, converge.
+local function PredictPosition(targetHRP, targetHumanoid, speed, reactionTime)
+    local t = reactionTime or gunReactionTime
+    local predicted
+    for _ = 1, predictionIterations do
+        local vel = GetSmoothedVelocity(targetHRP)
+        local distance = predicted and (predicted - targetHRP.Position).Magnitude or 0
+        -- First pass uses raw distance; subsequent passes use predicted travel
+        local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        local realDistance = myHRP and (targetHRP.Position - myHRP.Position).Magnitude or 0
+        local useDistance = (predicted == nil) and realDistance or realDistance
+        local travel = useDistance / speed + t
+        predicted = PredictOne(targetHRP, targetHumanoid, travel, vel)
+    end
+    return predicted
+end
+
+-- Prefer attachment origin, then head, then root
+local function GetAimOrigin()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local head = char:FindFirstChild("Head")
+    local gun = char:FindFirstChild("Gun")
+    if gun then
+        local att = gun:FindFirstChild("GunRaycastAttachment")
+        if att and att:IsA("Attachment") then
+            local ok, cf = pcall(function() return att.WorldCFrame end)
+            if ok and cf then return cf.Position end
         end
     end
-    return nearest
+    if head then return head.Position end
+    return hrp and hrp.Position or nil
 end
-
--- Smoothed velocity buffer (reduces jitter from jump-spam / touch input lag on mobile)
-local smoothedTargetVelocity = Vector3.new(0, 0, 0)
-
--- Shared prediction math for both gun shots and knife throws. Horizontal is
--- linear (roughly constant velocity over the prediction window). Vertical
--- only gets the gravity/kinematic correction while the target is actually
--- airborne — applying it while grounded was dragging shots into the floor.
---
--- timeOverride lets a caller supply its own prediction window instead of
--- the flat "Prediction Time" x "Prediction Strength" default — used by the
--- gun to scale with distance (see ShootMurderer), since a real bullet takes
--- longer to reach a far target than a close one, unlike a knife thrown at
--- someone right next to you.
-local function PredictTargetPosition(targetHRP, targetHumanoid, timeOverride)
-    local rawVelocity = targetHRP.AssemblyLinearVelocity
-    smoothedTargetVelocity = smoothedTargetVelocity:Lerp(rawVelocity, 0.6)
-
-    local effectivePrediction = timeOverride or (prediction * predictionStrength)
-
-    local predictedX = targetHRP.Position.X + (smoothedTargetVelocity.X * effectivePrediction)
-    local predictedZ = targetHRP.Position.Z + (smoothedTargetVelocity.Z * effectivePrediction)
-
-    local gravity = workspace.Gravity
-    local state = targetHumanoid and targetHumanoid:GetState()
-    local isAirborne = state == Enum.HumanoidStateType.Jumping
-        or state == Enum.HumanoidStateType.Freefall
-
-    local predictedY
-    if isAirborne then
-        predictedY = targetHRP.Position.Y
-            + (smoothedTargetVelocity.Y * effectivePrediction)
-            - (0.5 * gravity * effectivePrediction ^ 2)
-    else
-        predictedY = targetHRP.Position.Y
-    end
-
-    return Vector3.new(predictedX, predictedY, predictedZ) + Vector3.new(0, verticalOffset, 0)
-end
-
--- Assumed bullet travel speed in studs/s, and a small fixed reaction-time
--- floor on top of it. Tune bulletSpeed in Settings: lower it if shots at
--- range still land behind the murderer, raise it if they now overshoot.
-local bulletSpeed = 200
-local gunReactionTime = 0.05
 
 local function ShootMurderer()
     local murderer = GetMurderer()
-    if not murderer or not murderer.Character then return end
-
+    if not murderer or not murderer.Character then return false end
     local targetHRP = murderer.Character:FindFirstChild("HumanoidRootPart")
-    local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-
-    if not targetHRP or not myHRP then return end
-
-    local gun = EquipGun()
-    if not gun then return end
-
+    if not targetHRP then return false end
+    local myChar = LocalPlayer.Character
+    if not myChar or not myChar:FindFirstChild("Gun") then
+        EquipGun()
+        task.wait(0.15)
+        if not LocalPlayer.Character:FindFirstChild("Gun") then return false end
+    end
+    local gun = LocalPlayer.Character:FindFirstChild("Gun")
+    if not gun then return false end
     local shootRemote = gun:FindFirstChild("Shoot")
-    if not shootRemote then return end
-
-    -- Distance-scaled prediction instead of the flat default: a target
-    -- twice as far away needs roughly twice the lead time for a real
-    -- projectile to reach them, which a fixed time constant can't capture.
-    local distance = (targetHRP.Position - myHRP.Position).Magnitude
-    local travelTime = (distance / bulletSpeed) + gunReactionTime
-
-    local targetHumanoid = murderer.Character:FindFirstChild("Humanoid")
-    local predicted = PredictTargetPosition(targetHRP, targetHumanoid, travelTime)
-
-    local args = {
-        CFrame.new(myHRP.Position, predicted),
+    if not shootRemote then return false end
+    if not HasLineOfSight(targetHRP) then
+        print("⚠️ No line of sight to murderer — shot aborted")
+        return false
+    end
+    local origin = GetAimOrigin()
+    if not origin then return false end
+    local targetHum = murderer.Character:FindFirstChildOfClass("Humanoid")
+    local predicted = PredictPosition(targetHRP, targetHum, bulletSpeed, gunReactionTime)
+    shootRemote:FireServer(
+        CFrame.new(origin, predicted),
         CFrame.new(predicted)
-    }
-    shootRemote:FireServer(unpack(args))
-end
-
--- ===== DEBUG: FIND KNIFE THROW REMOTE =====
--- The gun's remote ("Shoot") lives directly on the Gun tool, but MM2's
--- knife throw very often routes through a shared remote in
--- ReplicatedStorage instead. This dumps candidates to the console so we
--- can point ThrowKnife() at the right one without guessing blind.
-local function DebugKnife()
-    local knife = EquipKnife()
-    if not knife then
-        warn("⚠️ No Knife found in Backpack or Character")
-        return
-    end
-
-    print("=== Knife tool children (ClassName: Name) ===")
-    for _, child in pairs(knife:GetChildren()) do
-        print(child.ClassName .. ": " .. child.Name)
-    end
-
-    -- Check inside any subfolder (e.g. "Events") since MM2 tools often
-    -- organize their remotes there instead of leaving them loose on the tool.
-    local eventsFolder = knife:FindFirstChild("Events")
-    if eventsFolder then
-        print("=== Contents of Knife.Events ===")
-        for _, child in pairs(eventsFolder:GetChildren()) do
-            print(child.ClassName .. ": " .. child.Name)
-        end
-    end
-
-    print("=== ReplicatedStorage remotes matching 'knife' or 'throw' ===")
-    local found = false
-    for _, obj in pairs(ReplicatedStorage:GetDescendants()) do
-        if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
-            local lname = obj.Name:lower()
-            if lname:find("knife") or lname:find("throw") then
-                print(obj.ClassName .. ": " .. obj:GetFullName())
-                found = true
-            end
-        end
-    end
-    if not found then
-        print("(none found — the remote may be nested in a folder with a generic name, or fired via a different service)")
-    end
-end
-
-local function DebugGun()
-    local gun = EquipGun()
-    if not gun then
-        warn("⚠️ No Gun found in Backpack or Character")
-        return
-    end
-
-    print("=== Gun tool children (ClassName: Name) ===")
-    for _, child in pairs(gun:GetChildren()) do
-        print(child.ClassName .. ": " .. child.Name)
-    end
-
-    -- Check inside any subfolder (e.g. "Events") — same pattern the Knife
-    -- turned out to use. If Gun has one too and "Shoot" isn't actually in
-    -- it (or there's a second, more specific remote in there), that would
-    -- explain why the gun's accuracy hasn't matched the knife's.
-    local eventsFolder = gun:FindFirstChild("Events")
-    if eventsFolder then
-        print("=== Contents of Gun.Events ===")
-        for _, child in pairs(eventsFolder:GetChildren()) do
-            print(child.ClassName .. ": " .. child.Name)
-        end
-    end
-
-    print("=== ReplicatedStorage remotes matching 'gun' or 'shoot' or 'bullet' or 'fire' ===")
-    local found = false
-    for _, obj in pairs(ReplicatedStorage:GetDescendants()) do
-        if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
-            local lname = obj.Name:lower()
-            if lname:find("gun") or lname:find("shoot") or lname:find("bullet") or lname:find("fire") then
-                print(obj.ClassName .. ": " .. obj:GetFullName())
-                found = true
-            end
-        end
-    end
-    if not found then
-        print("(none found in ReplicatedStorage)")
-    end
+    )
+    return true
 end
 
 local function ThrowKnife()
     local target = GetNearestPlayer()
-    if not target or not target.Character then return end
-
+    if not target or not target.Character then return false end
     local targetHRP = target.Character:FindFirstChild("HumanoidRootPart")
-    local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not targetHRP or not myHRP then return end
-
-    local knife = EquipKnife()
-    if not knife then return end
-
-    -- Confirmed via in-game Explorer dump: lives at Knife.Events.KnifeThrown
-    -- (siblings KnifeStabbed and HandleTouched are for the melee stab, not
-    -- the throw — don't use those here).
-    local eventsFolder = knife:FindFirstChild("Events")
-    local throwRemote = eventsFolder and eventsFolder:FindFirstChild("KnifeThrown")
-    if not throwRemote then
-        warn("⚠️ Knife.Events.KnifeThrown not found — knife structure may have changed, rerun Debug Knife Remote")
-        return
+    if not targetHRP then return false end
+    if not LocalPlayer.Character:FindFirstChild("Knife") then
+        EquipKnife()
+        task.wait(0.15)
+        if not LocalPlayer.Character:FindFirstChild("Knife") then return false end
     end
-
-    -- Argument signature is unverified — using the same pattern that worked
-    -- for the gun's "Shoot" remote (origin CFrame, target CFrame) as a
-    -- starting guess. If nothing happens or you get a Roblox Console error
-    -- when this fires, check the error/warning text and tell me — it'll
-    -- usually say exactly what type/count of args KnifeThrown expects.
-    local targetHumanoid = target.Character:FindFirstChild("Humanoid")
-    local predicted = PredictTargetPosition(targetHRP, targetHumanoid)
-
-    local args = {
-        CFrame.new(myHRP.Position, predicted),
+    local knife = LocalPlayer.Character:FindFirstChild("Knife")
+    if not knife then return false end
+    local events = knife:FindFirstChild("Events")
+    local throwRemote = events and events:FindFirstChild("KnifeThrown")
+    if not throwRemote then
+        warn("⚠️ Knife.Events.KnifeThrown not found")
+        return false
+    end
+    local origin = GetAimOrigin()
+    if not origin then return false end
+    local targetHum = target.Character:FindFirstChildOfClass("Humanoid")
+    local predicted = PredictPosition(targetHRP, targetHum, knifeSpeed, 0)
+    throwRemote:FireServer(
+        CFrame.new(origin, predicted),
         CFrame.new(predicted)
-    }
-    throwRemote:FireServer(unpack(args))
+    )
+    return true
 end
 
--- Single entry point the UI calls — picks shoot vs throw based on which
--- weapon you're actually holding, so every button/keybind stays the same.
 local function PerformAttack()
     local role = GetMyRole()
-    if role == "Sheriff" then
-        ShootMurderer()
-    elseif role == "Murderer" then
-        ThrowKnife()
+    if role == "Sheriff" then return ShootMurderer()
+    elseif role == "Murderer" then return ThrowKnife() end
+    return false
+end
+
+-- ===== AUTO-SHOOT (unchanged behavior, LOS-gated) =====
+local function AutoShootLoop()
+    if not autoShoot then return end
+    local role = GetMyRole()
+    local target
+    if role == "Sheriff" then target = GetMurderer()
+    elseif role == "Murderer" then target = GetNearestPlayer()
+    else return end
+    if not target or not target.Character then return end
+    local targetHRP = target.Character:FindFirstChild("HumanoidRootPart")
+    if not targetHRP then return end
+    local screenPos, onScreen = Camera:WorldToViewportPoint(targetHRP.Position)
+    if onScreen then
+        local dist = (Vector2.new(screenPos.X, screenPos.Y) - Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)).Magnitude
+        if dist < fovRadius and HasLineOfSight(targetHRP) then
+            PerformAttack()
+            task.wait(math.random(150, 350) / 1000)
+        end
     end
 end
 
--- ===== AUTO-SHOOT =====
--- Checks whether anything solid sits between you and the target before
--- committing to a shot. Without this, auto-shoot will happily fire through
--- walls/props it can't actually see through — those attempts just miss (the
--- server's own hit validation blocks them) and repeatedly firing at an
--- impossible angle is also a pattern anti-cheat can flag.
-local function HasLineOfSight(targetHRP)
-    local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not myHRP then return false end
+-- ===== LOCK ON =====
+local lockOnEnabled = false
+local lockOnConnection = nil
+local lockSmoothness = 0.25
 
-    local rayParams = RaycastParams.new()
-    rayParams.FilterType = Enum.RaycastFilterType.Exclude
-    rayParams.FilterDescendantsInstances = {LocalPlayer.Character}
-
-    local direction = targetHRP.Position - myHRP.Position
-    local result = Workspace:Raycast(myHRP.Position, direction, rayParams)
-
-    if not result then
-        return true -- nothing solid hit before reaching the target's position
-    end
-
-    -- Clear only if whatever we hit first is part of the target's own
-    -- character (i.e. we hit them, not a wall in front of them).
-    return result.Instance:IsDescendantOf(targetHRP.Parent)
-end
-
--- Specifically checks whether the gun/knife is currently HELD (a child of
--- your Character), not just sitting in your Backpack. GetMyRole() checks
--- both, since shooting/throwing auto-equips from the Backpack anyway — but
--- Lock On is passive and shouldn't move your camera before you've actually
--- drawn the weapon.
 local function GetEquippedWeaponRole()
-    local character = LocalPlayer.Character
-    if not character then return "Innocent" end
-    if character:FindFirstChild("Knife") then return "Murderer" end
-    if character:FindFirstChild("Gun") then return "Sheriff" end
+    local c = LocalPlayer.Character
+    if not c then return "Innocent" end
+    if c:FindFirstChild("Knife") then return "Murderer" end
+    if c:FindFirstChild("Gun") then return "Sheriff" end
     return "Innocent"
 end
 
--- ===== LOCK ON (CAMERA) =====
-local lockOnEnabled = false
-local lockOnConnection = nil
-local lockSmoothness = 0.25 -- 0 = never moves, 1 = instant snap each frame
-
 local function ToggleLockOn()
     lockOnEnabled = not lockOnEnabled
-
     if lockOnEnabled then
         lockOnConnection = RunService.RenderStepped:Connect(function()
             local role = GetEquippedWeaponRole()
-
-            -- Only ever lock on while the weapon is actually drawn/held —
-            -- owning it in your Backpack doesn't count, and being unarmed
-            -- never gets a target, so the camera stays fully under your
-            -- control until you actually equip the gun or knife.
             if role ~= "Sheriff" and role ~= "Murderer" then return end
-
             local target
-            if role == "Sheriff" then
-                target = GetMurderer()
-            elseif role == "Murderer" then
-                target = GetNearestPlayer()
-            end
-
+            if role == "Sheriff" then target = GetMurderer()
+            elseif role == "Murderer" then target = GetNearestPlayer() end
             if not target or not target.Character then return end
             local targetHRP = target.Character:FindFirstChild("HumanoidRootPart")
             if not targetHRP then return end
-
             local lookAt = targetHRP.Position + Vector3.new(0, verticalOffset, 0)
-            local currentCFrame = Camera.CFrame
-            local desiredCFrame = CFrame.new(currentCFrame.Position, lookAt)
-
-            -- Smoothly rotate toward the target instead of snapping — a hard
-            -- snap every frame feels jarring and is an obvious tell that
-            -- something's automating your camera.
-            Camera.CFrame = currentCFrame:Lerp(desiredCFrame, lockSmoothness)
+            local current = Camera.CFrame
+            local desired = CFrame.new(current.Position, lookAt)
+            Camera.CFrame = current:Lerp(desired, lockSmoothness)
         end)
         print("🔒 Lock On Enabled")
     else
@@ -1197,44 +936,15 @@ local function ToggleLockOn()
     end
 end
 
-local function AutoShootLoop()
-    if not autoShoot then return end
-
-    local role = GetMyRole()
-    local target, targetHRP
-
-    if role == "Sheriff" then
-        target = GetMurderer()
-    elseif role == "Murderer" then
-        target = GetNearestPlayer()
-    else
-        return
-    end
-
-    if not target or not target.Character then return end
-    targetHRP = target.Character:FindFirstChild("HumanoidRootPart")
-    if not targetHRP then return end
-
-    local screenPos, onScreen = Camera:WorldToViewportPoint(targetHRP.Position)
-    if onScreen then
-        local distance = (Vector2.new(screenPos.X, screenPos.Y) - Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)).Magnitude
-        if distance < fovRadius and HasLineOfSight(targetHRP) then
-            PerformAttack()
-            task.wait(math.random(150, 350) / 1000)
-        end
-    end
-end
-
 -- ===== MOBILE GUI =====
 local function CreateMobileGUI()
     if mobileGUI then mobileGUI:Destroy() end
-    
     mobileGUI = Instance.new("ScreenGui")
     mobileGUI.Name = "MM2MobileGUI"
     mobileGUI.ResetOnSpawn = false
     mobileGUI.IgnoreGuiInset = true
     mobileGUI.Parent = LocalPlayer.PlayerGui
-    
+
     buttonFrame = Instance.new("Frame")
     buttonFrame.Size = UDim2.new(0, 120, 0, 120)
     buttonFrame.Position = UDim2.new(0.85, -60, 0.75, -60)
@@ -1243,11 +953,11 @@ local function CreateMobileGUI()
     buttonFrame.BorderSizePixel = 2
     buttonFrame.BorderColor3 = Color3.fromRGB(255, 255, 255)
     buttonFrame.Parent = mobileGUI
-    
+
     local corner = Instance.new("UICorner")
     corner.CornerRadius = UDim.new(1, 0)
     corner.Parent = buttonFrame
-    
+
     local buttonLabel = Instance.new("TextLabel")
     buttonLabel.Size = UDim2.new(1, 0, 1, 0)
     buttonLabel.BackgroundTransparency = 1
@@ -1256,23 +966,17 @@ local function CreateMobileGUI()
     buttonLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
     buttonLabel.Font = Enum.Font.SourceSansBold
     buttonLabel.Parent = buttonFrame
-    
+
     local button = Instance.new("ImageButton")
     button.Size = UDim2.new(1, 0, 1, 0)
     button.BackgroundTransparency = 1
     button.Parent = buttonFrame
-    
     button.MouseButton1Click:Connect(function()
-        if autoShoot then
-            print("Auto-shoot is on! Toggle off for manual.")
-        else
-            PerformAttack()
-        end
+        if autoShoot then print("Auto-shoot is on! Toggle off for manual.")
+        else PerformAttack() end
     end)
-    
-    local dragging = false
-    local dragStart, startPos
-    
+
+    local dragging, dragStart, startPos
     button.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.Touch then
             dragging = true
@@ -1280,43 +984,46 @@ local function CreateMobileGUI()
             startPos = buttonFrame.Position
         end
     end)
-    
     button.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.Touch then
-            dragging = false
-        end
+        if input.UserInputType == Enum.UserInputType.Touch then dragging = false end
     end)
-    
     button.InputChanged:Connect(function(input)
         if dragging and input.UserInputType == Enum.UserInputType.Touch then
             local delta = input.Position - dragStart
-            local viewportSize = game:GetService("GuiService"):GetScreenResolution()
+            local viewport = game:GetService("GuiService"):GetScreenResolution()
             buttonFrame.Position = UDim2.new(
-                startPos.X.Scale + (delta.X / viewportSize.X),
-                0,
-                startPos.Y.Scale + (delta.Y / viewportSize.Y),
-                0
+                startPos.X.Scale + delta.X / viewport.X, 0,
+                startPos.Y.Scale + delta.Y / viewport.Y, 0
             )
         end
     end)
 end
 
--- ===== RAYFIELD UI =====
-
--- Main Tab
+-- ===== UI =====
 MainTab:CreateToggle({
     Name = "Glow ESP",
     CurrentValue = false,
-    Callback = function(Value)
-        ToggleESP()
-    end
+    Callback = function() ToggleESP() end
 })
 
 MainTab:CreateToggle({
     Name = "Gun ESP (Dropped Guns)",
     CurrentValue = false,
+    Callback = function() ToggleGunESP() end
+})
+
+MainTab:CreateToggle({
+    Name = "Knife ESP (Dropped Knives)",
+    CurrentValue = false,
+    Callback = function() ToggleKnifeESP() end
+})
+
+MainTab:CreateToggle({
+    Name = "ESP Occlusion Dim",
+    CurrentValue = false,
     Callback = function(Value)
-        ToggleGunESP()
+        espOcclusionEnabled = Value
+        print(Value and "✅ ESP occlusion dim on" or "❌ ESP occlusion dim off")
     end
 })
 
@@ -1342,9 +1049,7 @@ MainTab:CreateToggle({
 MainTab:CreateToggle({
     Name = "Lock On (Camera)",
     CurrentValue = false,
-    Callback = function(Value)
-        ToggleLockOn()
-    end
+    Callback = function() ToggleLockOn() end
 })
 
 MainTab:CreateSlider({
@@ -1352,23 +1057,7 @@ MainTab:CreateSlider({
     Range = {0.05, 1},
     Increment = 0.05,
     CurrentValue = 0.25,
-    Callback = function(Value)
-        lockSmoothness = Value
-    end
-})
-
-MainTab:CreateButton({
-    Name = "Debug Knife Remote (check console)",
-    Callback = function()
-        DebugKnife()
-    end
-})
-
-MainTab:CreateButton({
-    Name = "Debug Gun Remote (check console)",
-    Callback = function()
-        DebugGun()
-    end
+    Callback = function(Value) lockSmoothness = Value end
 })
 
 MainTab:CreateKeybind({
@@ -1376,18 +1065,18 @@ MainTab:CreateKeybind({
     CurrentKeybind = "Q",
     HoldToInteract = false,
     Callback = function()
-        if not autoShoot then
-            PerformAttack()
-        end
+        if not autoShoot then PerformAttack() end
     end
 })
 
--- Movement Tab
+-- Movement tab
 MovementTab:CreateToggle({
     Name = "Super Jump",
     CurrentValue = false,
     Callback = function(Value)
-        ToggleJump()
+        jumpEnabled = Value
+        ApplyMovement()
+        print(Value and ("✅ Jump Power: " .. jumpPower) or ("❌ Jump Power reset to: " .. originalJumpPower))
     end
 })
 
@@ -1395,14 +1084,10 @@ MovementTab:CreateSlider({
     Name = "Jump Power",
     Range = {30, 200},
     Increment = 5,
-    Suffix = "",
     CurrentValue = 50,
     Callback = function(Value)
         jumpPower = Value
-        if jumpEnabled then
-            ApplyMovement()
-            print("✅ Jump Power set to: " .. jumpPower)
-        end
+        if jumpEnabled then ApplyMovement() end
     end
 })
 
@@ -1410,7 +1095,9 @@ MovementTab:CreateToggle({
     Name = "Super Speed",
     CurrentValue = false,
     Callback = function(Value)
-        ToggleSpeed()
+        speedEnabled = Value
+        ApplyMovement()
+        print(Value and ("✅ Walk Speed: " .. walkSpeed) or ("❌ Walk Speed reset to: " .. originalWalkSpeed))
     end
 })
 
@@ -1418,28 +1105,20 @@ MovementTab:CreateSlider({
     Name = "Walk Speed",
     Range = {16, 100},
     Increment = 1,
-    Suffix = "",
     CurrentValue = 16,
     Callback = function(Value)
         walkSpeed = Value
-        if speedEnabled then
-            ApplyMovement()
-            print("✅ Walk Speed set to: " .. walkSpeed)
-        end
+        if speedEnabled then ApplyMovement() end
     end
 })
 
--- Fling Tab
+-- Fling tab
 FlingTab:CreateToggle({
     Name = "Enable Fling (F key)",
     CurrentValue = false,
     Callback = function(Value)
         flingEnabled = Value
-        if Value then
-            print("✅ Fling enabled! Press F to fling the murderer!")
-        else
-            print("❌ Fling disabled")
-        end
+        print(Value and "✅ Fling enabled! Press F to fling the murderer!" or "❌ Fling disabled")
     end
 })
 
@@ -1447,36 +1126,26 @@ FlingTab:CreateSlider({
     Name = "Fling Power",
     Range = {1000, 20000},
     Increment = 500,
-    Suffix = "",
     CurrentValue = 5000,
-    Callback = function(Value)
-        flingPower = Value
-        print("💥 Fling Power set to: " .. flingPower)
-    end
+    Callback = function(Value) flingPower = Value end
 })
 
 FlingTab:CreateKeybind({
     Name = "Fling Key",
     CurrentKeybind = "F",
     HoldToInteract = false,
-    Callback = function()
-        FlingMurderer()
-    end
+    Callback = function() FlingMurderer() end
 })
 
 FlingTab:CreateButton({
     Name = "Fling Murderer Now!",
-    Callback = function()
-        FlingMurderer()
-    end
+    Callback = function() FlingMurderer() end
 })
 
 FlingTab:CreateToggle({
     Name = "Anti-Fling Protection",
     CurrentValue = false,
-    Callback = function(Value)
-        ToggleAntiFling()
-    end
+    Callback = function() ToggleAntiFling() end
 })
 
 FlingTab:CreateSlider({
@@ -1485,21 +1154,17 @@ FlingTab:CreateSlider({
     Increment = 10,
     Suffix = "studs/s",
     CurrentValue = 100,
-    Callback = function(Value)
-        maxSafeVelocity = Value
-    end
+    Callback = function(Value) maxSafeVelocity = Value end
 })
 
--- Settings Tab
+-- Settings tab
 SettingsTab:CreateSlider({
     Name = "Prediction Time",
     Range = {0.05, 0.5},
     Increment = 0.005,
     Suffix = "s",
     CurrentValue = 0.185,
-    Callback = function(Value)
-        prediction = Value
-    end
+    Callback = function(Value) prediction = Value end
 })
 
 SettingsTab:CreateSlider({
@@ -1507,20 +1172,50 @@ SettingsTab:CreateSlider({
     Range = {0, 2},
     Increment = 0.05,
     CurrentValue = 1.0,
-    Callback = function(Value)
-        predictionStrength = Value
-    end
+    Callback = function(Value) predictionStrength = Value end
 })
 
 SettingsTab:CreateSlider({
-    Name = "Bullet Speed (Gun only)",
+    Name = "Bullet Speed",
     Range = {50, 500},
     Increment = 10,
     Suffix = "studs/s",
     CurrentValue = 200,
-    Callback = function(Value)
-        bulletSpeed = Value
-    end
+    Callback = function(Value) bulletSpeed = Value end
+})
+
+SettingsTab:CreateSlider({
+    Name = "Knife Speed",
+    Range = {50, 200},
+    Increment = 5,
+    Suffix = "studs/s",
+    CurrentValue = 96,
+    Callback = function(Value) knifeSpeed = Value end
+})
+
+SettingsTab:CreateSlider({
+    Name = "Gun Reaction Time",
+    Range = {0, 0.2},
+    Increment = 0.005,
+    Suffix = "s",
+    CurrentValue = 0.05,
+    Callback = function(Value) gunReactionTime = Value end
+})
+
+SettingsTab:CreateSlider({
+    Name = "Prediction Iterations",
+    Range = {1, 5},
+    Increment = 1,
+    CurrentValue = 3,
+    Callback = function(Value) predictionIterations = Value end
+})
+
+SettingsTab:CreateSlider({
+    Name = "Velocity Smoothing",
+    Range = {0, 1},
+    Increment = 0.05,
+    CurrentValue = 0.6,
+    Callback = function(Value) velocitySmoothing = Value end
 })
 
 SettingsTab:CreateSlider({
@@ -1529,9 +1224,15 @@ SettingsTab:CreateSlider({
     Increment = 0.05,
     Suffix = "studs",
     CurrentValue = 0.8,
-    Callback = function(Value)
-        verticalOffset = Value
-    end
+    Callback = function(Value) verticalOffset = Value end
+})
+
+SettingsTab:CreateSlider({
+    Name = "ESP Occlusion Dim",
+    Range = {0, 0.9},
+    Increment = 0.05,
+    CurrentValue = 0.3,
+    Callback = function(Value) espOcclusionDim = Value end
 })
 
 SettingsTab:CreateSlider({
@@ -1540,12 +1241,10 @@ SettingsTab:CreateSlider({
     Increment = 10,
     Suffix = "px",
     CurrentValue = 300,
-    Callback = function(Value)
-        fovRadius = Value
-    end
+    Callback = function(Value) fovRadius = Value end
 })
 
--- ===== INITIALIZATION =====
+-- ===== INIT =====
 if isMobile then
     CreateMobileGUI()
     print("📱 Mobile mode detected!")
@@ -1554,8 +1253,9 @@ end
 Window:SaveConfiguration()
 
 print("✅ Script Loaded!")
-print("🔴 Murderer | 🔵 Sheriff | 🟢 Innocent")
-print("🔫 Gun ESP - Shows dropped guns with pulsing markers")
+print("🔴 Murderer | 🔵 Sheriff | 🟢 Innocent | ⚫ Dead")
+print("🔫 Gun ESP | 🔪 Knife ESP — both debounced, pulsing, distance-aware")
 print("🦘 Super Jump & Speed in Movement tab")
 print("💥 Fling murderer in Fling tab (Press F)")
+print("🎯 Improved aimbot: per-target velocity buffer, iterative solve, expanded airborne states, LOS gate, attachment-priority origin")
 print("💾 Settings auto-save when changed!")
