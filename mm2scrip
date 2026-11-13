@@ -106,6 +106,19 @@ local function GetRoleColor(role, isDead)
     else return Color3.fromRGB(255, 255, 255) end
 end
 
+-- ===== LOS =====
+local losParams = RaycastParams.new()
+losParams.FilterType = Enum.RaycastFilterType.Exclude
+
+local function HasLineOfSight(targetHRP)
+    local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not myHRP or not targetHRP then return false end
+    losParams.FilterDescendantsInstances = { LocalPlayer.Character }
+    local hit = Workspace:Raycast(myHRP.Position, targetHRP.Position - myHRP.Position, losParams)
+    if not hit then return true end
+    return hit.Instance:IsDescendantOf(targetHRP.Parent)
+end
+
 -- ===== GLOW ESP =====
 local function CreateGlowESP(player)
     if not player or player == LocalPlayer or not player.Character then return end
@@ -145,10 +158,6 @@ local function UpdateGlowESP()
             esp.Highlight.OutlineColor = color
             esp.Color = color
             esp.LastRole = role
-            -- Occlusion dim (cheap, only every 6 frames)
-            if espOcclusionEnabled and esp._occlusionTick == nil then
-                esp._occlusionTick = 0
-            end
             if espOcclusionEnabled then
                 esp._occlusionTick = (esp._occlusionTick or 0) + 1
                 if esp._occlusionTick % 6 == 0 then
@@ -173,20 +182,7 @@ local function RemoveGlowESP(player)
     end
 end
 
--- ===== LOS =====
-local losParams = RaycastParams.new()
-losParams.FilterType = Enum.RaycastFilterType.Exclude
-
-function HasLineOfSight(targetHRP)
-    local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not myHRP or not targetHRP then return false end
-    losParams.FilterDescendantsInstances = { LocalPlayer.Character }
-    local hit = Workspace:Raycast(myHRP.Position, targetHRP.Position - myHRP.Position, losParams)
-    if not hit then return true end
-    return hit.Instance:IsDescendantOf(targetHRP.Parent)
-end
-
--- ===== GUN ESP (debounced) =====
+-- ===== TOOL ESP (shared scanner) =====
 local function GetToolPosition(tool)
     if not tool then return nil end
     local handle = tool:FindFirstChild("Handle")
@@ -291,12 +287,11 @@ local function CreateToolESP(tool, list, labelText, colorR, colorG, colorB)
     arrow.Font = Enum.Font.SourceSansBold
     arrow.Parent = billboard
 
-    local entry = {
+    table.insert(list, {
         Tool = tool, ESPPart = espPart, Billboard = billboard,
         Frame = frame, Label = label, DistanceLabel = distanceLabel, Arrow = arrow,
         CreateCount = 0, DestroyCount = 0,
-    }
-    table.insert(list, entry)
+    })
 
     spawn(function()
         local startTime = tick()
@@ -346,7 +341,6 @@ local function ScanTools(list, toolName, createFrames, destroyFrames, enableFlag
         end
     end
 
-    -- Handle currently-found tools
     for tool in pairs(found) do
         local existing
         for _, esp in pairs(list) do
@@ -365,7 +359,6 @@ local function ScanTools(list, toolName, createFrames, destroyFrames, enableFlag
                 existing.CreateCount = 0
                 existing.DestroyCount = 0
             else
-                -- Debounce: only create after tool is in Workspace for N frames
                 local pending = list._pending or {}
                 list._pending = pending
                 pending[tool] = (pending[tool] or 0) + 1
@@ -377,7 +370,6 @@ local function ScanTools(list, toolName, createFrames, destroyFrames, enableFlag
         end
     end
 
-    -- Cleanup missing
     for i = #list, 1, -1 do
         local esp = list[i]
         if esp and esp.Tool then
@@ -441,7 +433,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if input.KeyCode == Enum.KeyCode[flingKey] then FlingMurderer() end
 end)
 
--- ===== ANTI-FLING (unchanged) =====
+-- ===== ANTI-FLING =====
 local antiFlingEnabled = false
 local maxSafeVelocity = 100
 local severeVelocityThreshold = 250
@@ -677,7 +669,7 @@ LocalPlayer.CharacterAdded:Connect(function()
     ApplyMovement()
 end)
 
--- ===== AIMING =====
+-- ===== TARGETING =====
 local function GetMurderer()
     for _, v in pairs(Players:GetPlayers()) do
         if v ~= LocalPlayer then
@@ -708,24 +700,6 @@ local function GetNearestPlayer()
     return nearest
 end
 
-local function EquipGun()
-    local gun = LocalPlayer.Backpack:FindFirstChild("Gun")
-    if gun then
-        LocalPlayer.Character.Humanoid:EquipTool(gun)
-        return gun
-    end
-    return LocalPlayer.Character:FindFirstChild("Gun")
-end
-
-local function EquipKnife()
-    local knife = LocalPlayer.Backpack:FindFirstChild("Knife")
-    if knife then
-        LocalPlayer.Character.Humanoid:EquipTool(knife)
-        return knife
-    end
-    return LocalPlayer.Character:FindFirstChild("Knife")
-end
-
 local function GetMyRole()
     if not LocalPlayer.Character then return "Unknown" end
     if LocalPlayer.Character:FindFirstChild("Knife") or LocalPlayer.Backpack:FindFirstChild("Knife") then
@@ -737,7 +711,15 @@ local function GetMyRole()
     return "Innocent"
 end
 
--- ===== PREDICTION (per-target velocity buffers + iterative) =====
+local function GetEquippedWeaponRole()
+    local c = LocalPlayer.Character
+    if not c then return "Innocent" end
+    if c:FindFirstChild("Knife") then return "Murderer" end
+    if c:FindFirstChild("Gun") then return "Sheriff" end
+    return "Innocent"
+end
+
+-- ===== PREDICTION =====
 local velocityBuffers = {}  -- [HumanoidRootPart] = Vector3
 
 local function GetSmoothedVelocity(hrp)
@@ -777,24 +759,19 @@ local function PredictOne(hrp, humanoid, t, vel)
     return Vector3.new(px, py, pz) + Vector3.new(0, verticalOffset, 0)
 end
 
--- Iterative solve: predict using travel time, re-read velocity, converge.
 local function PredictPosition(targetHRP, targetHumanoid, speed, reactionTime)
     local t = reactionTime or gunReactionTime
     local predicted
     for _ = 1, predictionIterations do
         local vel = GetSmoothedVelocity(targetHRP)
-        local distance = predicted and (predicted - targetHRP.Position).Magnitude or 0
-        -- First pass uses raw distance; subsequent passes use predicted travel
         local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
         local realDistance = myHRP and (targetHRP.Position - myHRP.Position).Magnitude or 0
-        local useDistance = (predicted == nil) and realDistance or realDistance
-        local travel = useDistance / speed + t
+        local travel = realDistance / speed + t
         predicted = PredictOne(targetHRP, targetHumanoid, travel, vel)
     end
     return predicted
 end
 
--- Prefer attachment origin, then head, then root
 local function GetAimOrigin()
     local char = LocalPlayer.Character
     if not char then return nil end
@@ -812,73 +789,148 @@ local function GetAimOrigin()
     return hrp and hrp.Position or nil
 end
 
+-- ===== WEAPON EQUIP FALLBACK =====
+local function EnsureGun()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    local gun = char:FindFirstChild("Gun")
+    if gun then return gun end
+    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+    local bpGun = backpack and backpack:FindFirstChild("Gun")
+    if not bpGun then return nil end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum:EquipTool(bpGun)
+        task.wait(0.2)
+    end
+    return char:FindFirstChild("Gun")
+end
+
+local function EnsureKnife()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    local knife = char:FindFirstChild("Knife")
+    if knife then return knife end
+    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+    local bpKnife = backpack and backpack:FindFirstChild("Knife")
+    if not bpKnife then return nil end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum:EquipTool(bpKnife)
+        task.wait(0.2)
+    end
+    return char:FindFirstChild("Knife")
+end
+
+-- ===== SHOOT / THROW =====
 local function ShootMurderer()
     local murderer = GetMurderer()
-    if not murderer or not murderer.Character then return false end
-    local targetHRP = murderer.Character:FindFirstChild("HumanoidRootPart")
-    if not targetHRP then return false end
-    local myChar = LocalPlayer.Character
-    if not myChar or not myChar:FindFirstChild("Gun") then
-        EquipGun()
-        task.wait(0.15)
-        if not LocalPlayer.Character:FindFirstChild("Gun") then return false end
-    end
-    local gun = LocalPlayer.Character:FindFirstChild("Gun")
-    if not gun then return false end
-    local shootRemote = gun:FindFirstChild("Shoot")
-    if not shootRemote then return false end
-    if not HasLineOfSight(targetHRP) then
-        print("⚠️ No line of sight to murderer — shot aborted")
+    if not murderer or not murderer.Character then
+        warn("ShootMurderer: no murderer")
         return false
     end
+    local targetHRP = murderer.Character:FindFirstChild("HumanoidRootPart")
+    if not targetHRP then
+        warn("ShootMurderer: murderer has no HRP")
+        return false
+    end
+    if not LocalPlayer.Character then
+        warn("ShootMurderer: no local character")
+        return false
+    end
+
+    local gun = EnsureGun()
+    if not gun then
+        warn("ShootMurderer: no Gun in Character or Backpack — are you sheriff?")
+        return false
+    end
+
+    local shootRemote = gun:FindFirstChild("Shoot")
+    if not shootRemote then
+        warn("ShootMurderer: Gun has no 'Shoot' remote")
+        return false
+    end
+
+    if not HasLineOfSight(targetHRP) then
+        warn("ShootMurderer: no LOS to murderer (wall in the way)")
+        return false
+    end
+
     local origin = GetAimOrigin()
-    if not origin then return false end
+    if not origin then
+        warn("ShootMurderer: no aim origin")
+        return false
+    end
+
     local targetHum = murderer.Character:FindFirstChildOfClass("Humanoid")
     local predicted = PredictPosition(targetHRP, targetHum, bulletSpeed, gunReactionTime)
+
     shootRemote:FireServer(
         CFrame.new(origin, predicted),
         CFrame.new(predicted)
     )
+    print("🔫 Fired at " .. murderer.Name)
     return true
 end
 
 local function ThrowKnife()
     local target = GetNearestPlayer()
-    if not target or not target.Character then return false end
-    local targetHRP = target.Character:FindFirstChild("HumanoidRootPart")
-    if not targetHRP then return false end
-    if not LocalPlayer.Character:FindFirstChild("Knife") then
-        EquipKnife()
-        task.wait(0.15)
-        if not LocalPlayer.Character:FindFirstChild("Knife") then return false end
+    if not target or not target.Character then
+        warn("ThrowKnife: no target")
+        return false
     end
-    local knife = LocalPlayer.Character:FindFirstChild("Knife")
-    if not knife then return false end
+    local targetHRP = target.Character:FindFirstChild("HumanoidRootPart")
+    if not targetHRP then
+        warn("ThrowKnife: target has no HRP")
+        return false
+    end
+    if not LocalPlayer.Character then
+        warn("ThrowKnife: no local character")
+        return false
+    end
+
+    local knife = EnsureKnife()
+    if not knife then
+        warn("ThrowKnife: no Knife in Character or Backpack — are you murderer?")
+        return false
+    end
+
     local events = knife:FindFirstChild("Events")
     local throwRemote = events and events:FindFirstChild("KnifeThrown")
     if not throwRemote then
-        warn("⚠️ Knife.Events.KnifeThrown not found")
+        warn("ThrowKnife: Knife.Events.KnifeThrown not found")
         return false
     end
+
     local origin = GetAimOrigin()
-    if not origin then return false end
+    if not origin then
+        warn("ThrowKnife: no aim origin")
+        return false
+    end
+
     local targetHum = target.Character:FindFirstChildOfClass("Humanoid")
     local predicted = PredictPosition(targetHRP, targetHum, knifeSpeed, 0)
+
     throwRemote:FireServer(
         CFrame.new(origin, predicted),
         CFrame.new(predicted)
     )
+    print("🔪 Threw at " .. target.Name)
     return true
 end
 
 local function PerformAttack()
     local role = GetMyRole()
-    if role == "Sheriff" then return ShootMurderer()
-    elseif role == "Murderer" then return ThrowKnife() end
+    if role == "Sheriff" then
+        return ShootMurderer()
+    elseif role == "Murderer" then
+        return ThrowKnife()
+    end
+    warn("PerformAttack: no weapon role (role=" .. tostring(role) .. ")")
     return false
 end
 
--- ===== AUTO-SHOOT (unchanged behavior, LOS-gated) =====
+-- ===== AUTO-SHOOT =====
 local function AutoShootLoop()
     if not autoShoot then return end
     local role = GetMyRole()
@@ -903,14 +955,6 @@ end
 local lockOnEnabled = false
 local lockOnConnection = nil
 local lockSmoothness = 0.25
-
-local function GetEquippedWeaponRole()
-    local c = LocalPlayer.Character
-    if not c then return "Innocent" end
-    if c:FindFirstChild("Knife") then return "Murderer" end
-    if c:FindFirstChild("Gun") then return "Sheriff" end
-    return "Innocent"
-end
 
 local function ToggleLockOn()
     lockOnEnabled = not lockOnEnabled
@@ -967,34 +1011,57 @@ local function CreateMobileGUI()
     buttonLabel.Font = Enum.Font.SourceSansBold
     buttonLabel.Parent = buttonFrame
 
-    local button = Instance.new("ImageButton")
+    -- TextButton (not ImageButton) — reliable on touch
+    local button = Instance.new("TextButton")
     button.Size = UDim2.new(1, 0, 1, 0)
     button.BackgroundTransparency = 1
+    button.Text = ""
     button.Parent = buttonFrame
-    button.MouseButton1Click:Connect(function()
-        if autoShoot then print("Auto-shoot is on! Toggle off for manual.")
-        else PerformAttack() end
-    end)
 
-    local dragging, dragStart, startPos
+    local dragging = false
+    local dragStart = nil
+    local startPos = nil
+    local dragThreshold = 10  -- pixels; below = tap, above = drag
+
     button.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.Touch then
+        if input.UserInputType == Enum.UserInputType.Touch
+            or input.UserInputType == Enum.UserInputType.MouseButton1 then
             dragging = true
             dragStart = input.Position
             startPos = buttonFrame.Position
         end
     end)
-    button.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.Touch then dragging = false end
-    end)
+
     button.InputChanged:Connect(function(input)
-        if dragging and input.UserInputType == Enum.UserInputType.Touch then
+        if dragging and dragStart and (input.UserInputType == Enum.UserInputType.Touch
+            or input.UserInputType == Enum.UserInputType.MouseMovement) then
             local delta = input.Position - dragStart
-            local viewport = game:GetService("GuiService"):GetScreenResolution()
-            buttonFrame.Position = UDim2.new(
-                startPos.X.Scale + delta.X / viewport.X, 0,
-                startPos.Y.Scale + delta.Y / viewport.Y, 0
-            )
+            if delta.Magnitude > dragThreshold then
+                local viewport = workspace.CurrentCamera.ViewportSize
+                buttonFrame.Position = UDim2.new(
+                    startPos.X.Scale + delta.X / viewport.X, 0,
+                    startPos.Y.Scale + delta.Y / viewport.Y, 0
+                )
+            end
+        end
+    end)
+
+    button.InputEnded:Connect(function(input)
+        if not dragging then return end
+        dragging = false
+        if input.UserInputType == Enum.UserInputType.Touch
+            or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            local delta = dragStart and (input.Position - dragStart)
+            if not delta or delta.Magnitude <= dragThreshold then
+                if autoShoot then
+                    print("Auto-shoot is on — toggle off for manual")
+                else
+                    local ok = PerformAttack()
+                    if not ok then
+                        print("❌ Attack failed — check console (F9) for the reason")
+                    end
+                end
+            end
         end
     end)
 end
@@ -1254,8 +1321,9 @@ Window:SaveConfiguration()
 
 print("✅ Script Loaded!")
 print("🔴 Murderer | 🔵 Sheriff | 🟢 Innocent | ⚫ Dead")
-print("🔫 Gun ESP | 🔪 Knife ESP — both debounced, pulsing, distance-aware")
+print("🔫 Gun ESP | 🔪 Knife ESP — debounced, pulsing, distance-aware")
 print("🦘 Super Jump & Speed in Movement tab")
 print("💥 Fling murderer in Fling tab (Press F)")
 print("🎯 Improved aimbot: per-target velocity buffer, iterative solve, expanded airborne states, LOS gate, attachment-priority origin")
+print("📱 Mobile red button: tap to fire, drag to move. If it fails, check F9 console for the exact reason.")
 print("💾 Settings auto-save when changed!")
