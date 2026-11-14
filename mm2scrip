@@ -29,7 +29,7 @@ local TweenService = game:GetService("TweenService")
 -- ===== VARIABLES =====
 local prediction = 0.185
 local predictionStrength = 1.0
-local verticalOffset = 0.8
+local verticalOffset = 2.2        -- raised: aims at torso, not feet
 local isMobile = UserInputService.TouchEnabled
 local mobileGUI = nil
 local buttonFrame = nil
@@ -182,7 +182,7 @@ local function RemoveGlowESP(player)
     end
 end
 
--- ===== TOOL ESP (shared scanner) =====
+-- ===== TOOL ESP =====
 local function GetToolPosition(tool)
     if not tool then return nil end
     local handle = tool:FindFirstChild("Handle")
@@ -759,14 +759,21 @@ local function PredictOne(hrp, humanoid, t, vel)
     return Vector3.new(px, py, pz) + Vector3.new(0, verticalOffset, 0)
 end
 
+-- Fixed: honors Prediction Time / Prediction Strength sliders as a floor,
+-- and iterations re-measure from the previous predicted point so they
+-- actually converge instead of repeating identical math.
 local function PredictPosition(targetHRP, targetHumanoid, speed, reactionTime)
     local t = reactionTime or gunReactionTime
-    local predicted
+    local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    local baseDistance = myHRP and (targetHRP.Position - myHRP.Position).Magnitude or 0
+    local sliderFloor = prediction * predictionStrength
+
+    local predicted = targetHRP.Position
     for _ = 1, predictionIterations do
         local vel = GetSmoothedVelocity(targetHRP)
-        local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-        local realDistance = myHRP and (targetHRP.Position - myHRP.Position).Magnitude or 0
-        local travel = realDistance / speed + t
+        local currentDistance = myHRP and (predicted - myHRP.Position).Magnitude or baseDistance
+        local travel = currentDistance / math.max(speed, 1) + t
+        if travel < sliderFloor then travel = sliderFloor end
         predicted = PredictOne(targetHRP, targetHumanoid, travel, vel)
     end
     return predicted
@@ -789,7 +796,7 @@ local function GetAimOrigin()
     return hrp and hrp.Position or nil
 end
 
--- ===== WEAPON EQUIP FALLBACK =====
+-- ===== EQUIP FALLBACK =====
 local function EnsureGun()
     local char = LocalPlayer.Character
     if not char then return nil end
@@ -1011,7 +1018,6 @@ local function CreateMobileGUI()
     buttonLabel.Font = Enum.Font.SourceSansBold
     buttonLabel.Parent = buttonFrame
 
-    -- TextButton (not ImageButton) — reliable on touch
     local button = Instance.new("TextButton")
     button.Size = UDim2.new(1, 0, 1, 0)
     button.BackgroundTransparency = 1
@@ -1021,7 +1027,7 @@ local function CreateMobileGUI()
     local dragging = false
     local dragStart = nil
     local startPos = nil
-    local dragThreshold = 10  -- pixels; below = tap, above = drag
+    local dragThreshold = 10
 
     button.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.Touch
@@ -1287,10 +1293,10 @@ SettingsTab:CreateSlider({
 
 SettingsTab:CreateSlider({
     Name = "Vertical Offset",
-    Range = {0, 2.0},
-    Increment = 0.05,
+    Range = {0, 4.0},
+    Increment = 0.1,
     Suffix = "studs",
-    CurrentValue = 0.8,
+    CurrentValue = 2.2,
     Callback = function(Value) verticalOffset = Value end
 })
 
@@ -1324,6 +1330,6 @@ print("🔴 Murderer | 🔵 Sheriff | 🟢 Innocent | ⚫ Dead")
 print("🔫 Gun ESP | 🔪 Knife ESP — debounced, pulsing, distance-aware")
 print("🦘 Super Jump & Speed in Movement tab")
 print("💥 Fling murderer in Fling tab (Press F)")
-print("🎯 Improved aimbot: per-target velocity buffer, iterative solve, expanded airborne states, LOS gate, attachment-priority origin")
-print("📱 Mobile red button: tap to fire, drag to move. If it fails, check F9 console for the exact reason.")
+print("🎯 Vertical Offset default raised to 2.2 — aims at torso, not feet")
+print("📱 Mobile red button: tap to fire, drag to move. F9 console shows the exact failure reason.")
 print("💾 Settings auto-save when changed!")
